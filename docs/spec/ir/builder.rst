@@ -99,6 +99,9 @@ JIT 翻译与构造
    interface JitTranslateInput {
      readonly pc: number;
      readonly code: BorrowedBytes;
+     readonly codeBase: number;
+     readonly codeVersion: number;
+     readonly markDirectBodyShareable?: (pc: number, byteLength: number) => void;
    }
 
    type JitTranslate = (
@@ -106,7 +109,7 @@ JIT 翻译与构造
      builder: JitBlockBuilder,
    ) => BlockIR;
 
-``JitTranslateInput`` 提供当前位置和借用代码视图，``JitTranslate`` 定义同步构造并返回共享 IR 块的函数。入口选项引用这一类型，注册结构见 :doc:`/jit/index`。
+``JitTranslateInput`` 提供当前位置、借用代码视图、所属 region 的逻辑基址与代码代际；可选 ``markDirectBodyShareable`` 仅用于报告返回块中指令入口的连续取指范围，有效条件见 :doc:`/jit/code-memory`。``JitTranslate`` 定义同步构造并返回共享 IR 块的函数。入口选项引用这一类型，注册结构见 :doc:`/jit/index`。
 
 pc 与 nextPc 记录当前指令位置和顺序后继位置；首条位置、相邻边界与独立指令作用域按 schema 校验。耗时参数接受常量或动态 Value，阶段开始后使用已经捕获的时长。
 

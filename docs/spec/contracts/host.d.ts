@@ -61,6 +61,12 @@ export interface JitTranslateInput {
   readonly codeBase: number;
   /** 按实例 memory 维护的代码代际；代码区域内的成功写入即时递增。 */
   readonly codeVersion: number;
+  /**
+   * 报告本次返回块中一个指令入口的连续取指字节范围，供 Direct JIT 判断不同逻辑
+   * 窗口是否指向同一经验证的指令体。仅在同步 translate 回调期间有效；多次调用
+   * 必须各自对应返回块中不同的指令入口。
+   */
+  readonly markDirectBodyShareable?: (pc: number, byteLength: number) => void;
 }
 export type JitTranslate = (input: JitTranslateInput, builder: JitBlockBuilder) => BlockIR;
 export interface InstructionHook {
@@ -127,6 +133,11 @@ export interface JitOptions {
    * 环内除该递减外无可观察效果；运行时按时间窗折叠轮次，最后一轮仍正常执行。
    */
   readonly delays?: ReadonlyMap<number, JitDelay>;
+  /**
+   * 启用 Direct 指令体共享：同步翻译期间提供 `markDirectBodyShareable`，并只把通过
+   * 运行时校验的等价候选交给 Direct 会话。仅省略时为 false；关闭时所有入口独立执行。
+   */
+  readonly shareDirectBodies?: boolean;
   readonly translate: JitTranslate;
 }
 export interface JitHost {

@@ -13,9 +13,16 @@ import type {
   DirectJitCache,
   DirectJitCacheStats,
   DirectJitDelay,
+  DirectJitEmitStats,
   DirectJitFrame,
+  DirectJitInstruction,
   DirectJitProgram,
   DirectJitReason,
+  DirectJitRunResult,
+  DirectJitSession,
+  DirectJitSessionStats,
+  DirectJitShareCandidate,
+  DirectJitShareRejectedStats,
 } from './types.js';
 import { analyzeBody, type Primitive } from './analysis.js';
 import {
@@ -262,6 +269,19 @@ interface DelayFingerprint {
   };
 }
 
+/** Validated physical identity of a share candidate. */
+interface ShareKey {
+  readonly storage: string;
+  readonly codeVersion: number;
+  readonly offset: number;
+  readonly byteLength: number;
+}
+
+interface ShareStamp {
+  readonly share: ShareKey | undefined;
+  readonly invalid: boolean;
+}
+
 interface BindingFingerprint {
   readonly states: readonly (readonly [string, number])[];
   readonly memories: readonly (readonly [string, number])[];
@@ -290,16 +310,75 @@ interface CachedInstruction {
   readonly instruction: Instruction | undefined;
   /** Stable continuation ID once this body has ever emitted an elapse. */
   readonly resumeId: number | undefined;
+  /** Explicit physical identity, or undefined when the entry never opted into sharing. */
+  readonly share: ShareKey | undefined;
+  readonly shareInvalid: boolean;
 }
 
 type ResidentStatus = DirectJitReason | number;
 type ResidentStep = (frame: DirectJitFrame, deadline: number, pc: number) => ResidentStatus;
+type SharedStep = (frame: DirectJitFrame, deadline: number, nextPc: number) => ResidentStatus;
 type ResidentResume = (frame: DirectJitFrame, resume: number) => ResidentStatus;
 
 interface ResidentFunctions {
   readonly step: ResidentStep;
   readonly resume: ResidentResume | undefined;
 }
+
+interface SharedFunctions {
+  readonly step: SharedStep;
+  readonly resume: ResidentResume | undefined;
+}
+
+/** One step/resume pair reused by every equivalent route of a physical identity. */
+interface SharedVariant {
+  readonly id: number;
+  readonly key: string;
+  readonly share: ShareKey;
+  readonly delay: DelayFingerprint | undefined;
+  /** The validated body every route in this variant must match structurally. */
+  readonly body: RegionIR;
+  /** Representative compiled body; its emitted IR is shared by the whole variant. */
+  readonly instruction: Instruction;
+  functions: SharedFunctions | undefined;
+  /** Continuation identifier owned by the shared function, never by an independent body. */
+  resumeId: number;
+  sourceSize: number;
+  /** Current logical PC → route nextPc. */
+  entries: Map<number, number>;
+  /** PCs already attributed to this shared body for `shareReusedBodies`. */
+  attributed: Set<number>;
+}
+
+interface SharedRoute {
+  readonly step: SharedStep;
+  readonly nextPc: number;
+  readonly variant: SharedVariant;
+}
+
+type SessionRoute = ResidentStep | SharedRoute;
+
+function isSharedRoute(route: SessionRoute | undefined): route is SharedRoute {
+  return route !== undefined && typeof route !== 'function';
+}
+
+function sameSessionRoute(current: SessionRoute | undefined, desired: SessionRoute): boolean {
+  if (current === desired) return true;
+  if (current === undefined || typeof current === 'function') return false;
+  if (typeof desired === 'function') return false;
+  return current.step === desired.step && current.nextPc === desired.nextPc;
+}
+
+interface ShareCandidateEntry {
+  readonly pc: number;
+  readonly nextPc: number;
+  readonly record: CachedInstruction;
+  readonly instruction: Instruction;
+  readonly share: ShareKey;
+}
+
+type ShareCategory =
+  'shared' | 'missing' | 'invalid' | 'single' | 'ir' | 'delay' | 'isolated' | 'context';
 
 interface ResidentShard {
   readonly id: number;
@@ -321,6 +400,8 @@ interface DirectJitCacheState {
   readonly shards: ResidentShard[];
   nextResume: number;
   nextShard: number;
+  /** Cumulative source characters of separately emitted synchronous helpers. */
+  helperBytes: number;
   stats: {
     compiledBlocks: number;
     reusedBlocks: number;
@@ -333,6 +414,8 @@ interface DirectJitCacheState {
 }
 
 const directJitCaches = new WeakMap<DirectJitCache, DirectJitCacheState>();
+/** At most one live incremental session owns a cache's mutable shard set. */
+const directJitSessions = new WeakMap<DirectJitCache, DirectJitSessionImpl>();
 
 function createDirectJitCache(): DirectJitCache {
   const cache = Object.freeze({}) as unknown as DirectJitCache;
@@ -344,6 +427,7 @@ function createDirectJitCache(): DirectJitCache {
     shards: [],
     nextResume: 1,
     nextShard: 1,
+    helperBytes: 0,
     stats: {
       compiledBlocks: 0,
       reusedBlocks: 0,
@@ -456,6 +540,93 @@ function sameDelay(
   );
 }
 
+/**
+ * Structural equality of validated IR. Object.is keeps `-0`, `NaN`, `Infinity` and boolean
+ * identity exact; array order is execution order, and source positions compare as data.
+ * The checked pair set only defends against an unexpected cyclic object graph: validation
+ * treats the input as immutable, so an equal DAG remains equal without memoisation.
+ */
+function sameRegion(left: RegionIR, right: RegionIR): boolean {
+  return sameIrValue(left, right, new WeakMap());
+}
+
+function sameIrValue(
+  left: unknown,
+  right: unknown,
+  seen: WeakMap<object, WeakSet<object>>,
+): boolean {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== 'object' || left === null || typeof right !== 'object' || right === null)
+    return false;
+  const leftArray = Array.isArray(left);
+  const rightArray = Array.isArray(right);
+  if (leftArray !== rightArray) return false;
+  if (leftArray && (left as readonly unknown[]).length !== (right as readonly unknown[]).length)
+    return false;
+  let pairs = seen.get(left);
+  if (pairs?.has(right)) return true;
+  if (pairs === undefined) {
+    pairs = new WeakSet();
+    seen.set(left, pairs);
+  }
+  pairs.add(right);
+  if (leftArray) {
+    const a = left as readonly unknown[];
+    const b = right as readonly unknown[];
+    for (let index = 0; index < a.length; index++)
+      if (!sameIrValue(a[index], b[index], seen)) return false;
+    return true;
+  }
+  const a = left as Readonly<Record<string, unknown>>;
+  const b = right as Readonly<Record<string, unknown>>;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of keys) {
+    if (a[key] === undefined && b[key] === undefined) continue;
+    if (!sameIrValue(a[key], b[key], seen)) return false;
+  }
+  return true;
+}
+
+function shareKeyText(share: ShareKey): string {
+  return JSON.stringify([share.storage, share.codeVersion, share.offset, share.byteLength]);
+}
+
+/** Validate the explicit marker. An invalid marker still lets the entry run independently. */
+function readShare(candidate: DirectJitShareCandidate | undefined): ShareStamp {
+  if (candidate === undefined) return { share: undefined, invalid: false };
+  if (typeof candidate !== 'object' || candidate === null)
+    return { share: undefined, invalid: true };
+  const { storage, codeVersion, offset, byteLength } = candidate;
+  if (
+    typeof storage !== 'string' ||
+    storage.length === 0 ||
+    !Number.isSafeInteger(codeVersion) ||
+    codeVersion < 0 ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    !Number.isSafeInteger(byteLength) ||
+    byteLength <= 0 ||
+    !Number.isSafeInteger(offset + byteLength)
+  )
+    return { share: undefined, invalid: true };
+  return {
+    share: { storage, codeVersion, offset, byteLength },
+    invalid: false,
+  };
+}
+
+function sameShare(left: ShareKey | undefined, right: ShareKey | undefined): boolean {
+  return (
+    left === right ||
+    (left !== undefined &&
+      right !== undefined &&
+      left.storage === right.storage &&
+      left.codeVersion === right.codeVersion &&
+      left.offset === right.offset &&
+      left.byteLength === right.byteLength)
+  );
+}
+
 function clearCacheState(state: DirectJitCacheState): void {
   state.entries.clear();
   state.constants.length = 0;
@@ -479,6 +650,8 @@ export interface DirectJitCompiler {
     cache?: DirectJitCache,
   ): DirectJitProgram | undefined;
   createCache(): DirectJitCache;
+  /** Create or replace the single incremental session attached to a cache. */
+  createSession(binding: DirectJitBinding, cache?: DirectJitCache): DirectJitSession;
   clearCache(cache: DirectJitCache): void;
   cacheStats(cache: DirectJitCache): DirectJitCacheStats;
 }
@@ -489,35 +662,13 @@ interface Folded {
   readonly text: string;
 }
 
-/** Development-only code shape: how many host statements one IR operation costs. */
-export interface DirectJitEmitStats {
-  readonly blocks: number;
-  /** Top-level IR operations, the denominator #256 quotes for one instruction block. */
-  readonly operations: number;
-  /** IR operations including nested value and statement regions. */
-  readonly nestedOperations: number;
-  readonly statements: number;
-  readonly statementsPerOperation: number;
-  readonly statementsPerNestedOperation: number;
-  /** Operations that cost no statement because they folded; adds back the pre-folding count. */
-  readonly foldedOperations: number;
-  readonly selectBlocks: number;
-  /** Worst block by statements per operation; `null` for an empty program. */
-  readonly worst: {
-    readonly pc: number;
-    readonly operations: number;
-    readonly statements: number;
-    readonly statementsPerOperation: number;
-    readonly foldedOperations: number;
-    readonly selectBlocks: number;
-  } | null;
-}
-
 /**
  * Code budget for one generated shard. Emitted characters, not registers, predict where V8
  * stops optimizing a function: measured blocks slow down sharply from ~35 KB of source.
  */
 const SHARD_CODE_BUDGET = 36_000;
+/** Default instruction count per resident shard; `DirectJitBinding.shardSize` overrides it. */
+const DIRECT_SHARD_SIZE = 48;
 // Only outline a large, asymmetric branch: the extra call and slot copy should not
 // be paid by both arms of a common conditional.
 const OUTLINE_MIN_LINES = 512;
@@ -583,6 +734,9 @@ function compileDirectJitProgram(
   if (!validIndex(binding.pc.index) || binding.states.get(binding.pc.name) !== binding.pc.index)
     return undefined;
   const cache = suppliedCache ?? createDirectJitCache();
+  // A full-program build owns and reorders the same shard set, so an incremental session
+  // must stop dispatching before the cache is reconciled.
+  directJitSessions.get(cache)?.dispose();
   const state = cacheState(cache);
   const fingerprint = bindingFingerprint(binding);
   if (state.binding !== undefined && !sameBinding(state.binding, fingerprint)) {
@@ -629,6 +783,7 @@ function compileDirectJitProgram(
       fn,
     );
     const run = body.compileFunction(constants);
+    state.helperBytes += body.functionSourceSize;
     const compiled = { target: capture(run), run, body };
     state.functions.set(name, compiled);
     return compiled;
@@ -656,6 +811,10 @@ function compileDirectJitProgram(
     ) {
       compiled = cached.instruction;
       if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
+      // A full build has no share markers: keep cached bodies but drop stale sharing metadata
+      // so a later session cannot route them through a shared body that this build never used.
+      if (cached.share !== undefined || cached.shareInvalid)
+        state.entries.set(instruction.pc, { ...cached, share: undefined, shareInvalid: false });
       state.stats.reusedBlocks++;
     } else {
       if (cached !== undefined) state.stats.invalidatedBlocks++;
@@ -675,6 +834,8 @@ function compileDirectJitProgram(
         delay,
         instruction: compiled,
         resumeId,
+        share: undefined,
+        shareInvalid: false,
       });
       state.stats.compiledBlocks++;
     }
@@ -692,7 +853,8 @@ function compileDirectJitProgram(
     readonly shardSize?: number;
     readonly shardSlotLimit?: number;
   };
-  const shardSize = validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : 48;
+  const shardSize =
+    validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : DIRECT_SHARD_SIZE;
   // A supplied cache makes the split form resident: instruction bodies and shard functions stay
   // alive while each build only assembles a fresh dispatcher over the current shard set.
   if (options.split === true && suppliedCache !== undefined)
@@ -743,7 +905,11 @@ function compileDirectJitProgram(
 
 export const compileDirectJit: DirectJitCompiler = Object.assign(compileDirectJitProgram, {
   createCache: createDirectJitCache,
+  createSession(binding: DirectJitBinding, cache?: DirectJitCache): DirectJitSession {
+    return createDirectJitSession(binding, cache);
+  },
   clearCache(cache: DirectJitCache): void {
+    directJitSessions.get(cache)?.dispose();
     clearCacheState(cacheState(cache));
   },
   cacheStats(cache: DirectJitCache): DirectJitCacheStats {
@@ -1308,7 +1474,7 @@ function preferredSuccessor(
 
 function residentStepFinish(
   entry: Instruction,
-  inside: string,
+  inside: string | undefined,
   binding: DirectJitBinding,
   fallthrough?: Instruction,
 ): string {
@@ -1335,10 +1501,15 @@ function residentStepFinish(
         ? `if (F.stopAfterInstruction && !F.finishCheckpoint?.(deadline, ${entry.suffix.length === 0})) return "invalidated"; if (F.publishPending) return "invalidated"; `
         : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; ';
   }
+  const pcCheck =
+    'if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc);';
+  if (inside === undefined)
+    return `${checkpoint}const pc = S[${binding.pc.index}]; ${pcCheck} return pc;`;
+  const read = `pc = S[${binding.pc.index}]; ${pcCheck}`;
   if (fallthrough !== undefined) {
-    return `${checkpoint}pc = S[${binding.pc.index}]; if (pc !== ${fallthrough.pc}) { if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc; }`;
+    return `${checkpoint}pc = S[${binding.pc.index}]; if (pc !== ${fallthrough.pc}) { ${pcCheck} if (${inside}) continue; return pc; }`;
   }
-  return `${checkpoint}pc = S[${binding.pc.index}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
+  return `${checkpoint}${read} if (${inside}) continue; return pc;`;
 }
 
 function residentResumeFinish(stop: boolean, pcIndex: number): string {
@@ -1404,6 +1575,49 @@ type ResidentShardFactory = (
   runtimeHelpers: typeof helpers,
 ) => [ResidentStep, ResidentResume | undefined];
 
+/**
+ * One step/resume pair for an equivalence class. The logical PC and implicit successor are
+ * route data: `nextPc` is written at the same order point as an independent shard, and the
+ * resume function reads the actual PC the prefix left in `S[pc]`. Every other line is the
+ * representative `Instruction`, so checkpoints, publication, deadline and exception
+ * behaviour stay identical to the normal shard emitter.
+ */
+function sharedBodyProgram(
+  variant: SharedVariant,
+  binding: DirectJitBinding,
+  pcIndex: number,
+): string[] {
+  const entry = variant.instruction;
+  const registers = Array.from({ length: entry.slots.length }, (_, index) => `v${index}`);
+  const outlined: string[][] = [];
+  const lines = [
+    `function stepShared${variant.id}(F, deadline, nextPc) {`,
+    ...prelude(registers),
+    ...entry.barrier,
+    ...entry.guard,
+    `S[${pcIndex}] = nextPc;`,
+    dirty('SD', pcIndex),
+    ...entry.outlinePrefix(outlined),
+    ...elapsed(entry, variant.resumeId, binding.host === true),
+    ...entry.suffix,
+    entry.isolated ? publish : residentStepFinish(entry, undefined, binding),
+    '}',
+  ];
+  if (entry.duration !== undefined) {
+    lines.push(
+      `function resumeShared${variant.id}(F, resume) {`,
+      ...prelude(registers),
+      ...entry.slots.map((slot, slotIndex) => `${slot} = L[${slotIndex}];`),
+      'F.resume = 0;',
+      ...entry.suffix,
+      entry.isolated ? publish : residentResumeFinish(entry.stop, pcIndex),
+      '}',
+    );
+  }
+  for (const helper of outlined) lines.push(...helper);
+  return lines;
+}
+
 // Share only the unbound factory. Neither the source key nor the factory captures a JIT cache,
 // and every caller binds its own constants when it creates the step and resume functions.
 const residentFactories = new Map<string, ResidentShardFactory>();
@@ -1442,17 +1656,17 @@ function compileResidentShard(
   state: DirectJitCacheState,
   shard: ResidentShard,
   binding: DirectJitBinding,
-): void {
+): number {
   const lines = residentShardProgram(shard, binding);
   const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
-  const factory = residentShardFactory(
-    `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`,
-  );
+  const source = `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`;
+  const factory = residentShardFactory(source);
   const [step, resumeFunction] = factory(Object.freeze([...state.constants]), helpers);
   shard.functions = { step, resume: resumeFunction };
   shard.signature = Object.freeze([...shard.entries]);
   shard.dirty = false;
   state.stats.compiledShards++;
+  return source.length;
 }
 
 /** Tiny generated router over resident functions; only this source is rebuilt per program. */
@@ -1704,6 +1918,8 @@ class Instruction {
   operations = 0;
   /** Labeled `select` blocks that survived the pure-expression form. */
   selects = 0;
+  /** Generated source characters of `compileFunction`; zero for instruction bodies. */
+  functionSourceSize = 0;
   /** Operations whose statement was removed by folding; the counterfactual of `statements`. */
   foldedOperations = 0;
   /** IR operations anywhere in the block, nested value and statement regions included. */
@@ -1777,11 +1993,9 @@ class Instruction {
     this.compact();
     const params = fn.params.map((_, index) => `a${index}`);
     const lines = [...prelude(this.slots), ...this.prefix];
-    return new Function(
-      'C',
-      'H',
-      `"use strict"; return function(F${params.map((param) => `,${param}`).join('')}) {\n${lines.join('\n')}\n};`,
-    )(Object.freeze([...constants]), helpers);
+    const source = `"use strict"; return function(F${params.map((param) => `,${param}`).join('')}) {\n${lines.join('\n')}\n};`;
+    this.functionSourceSize = source.length;
+    return new Function('C', 'H', source)(Object.freeze([...constants]), helpers);
   }
 
   compile(instruction: { pc: number; nextPc: number; body: RegionIR }): this {
@@ -2930,4 +3144,1211 @@ class Instruction {
         throw unsupported;
     }
   }
+}
+
+/** One instruction record staged by an incremental commit. */
+interface StagedChange {
+  readonly pc: number;
+  /** Non-finite `nextPc` removes the cache record instead of adding one. */
+  readonly remove: boolean;
+  readonly record: CachedInstruction | undefined;
+  /** True when the instruction body was emitted or the cached record was rebuilt. */
+  readonly changed: boolean;
+  /** True when only the share marker changed and the compiled body was reused. */
+  readonly metadataOnly: boolean;
+}
+
+interface SessionCounters {
+  batches: number;
+  routeInstalls: number;
+  routeRemovals: number;
+  compiledShards: number;
+  reusedShards: number;
+  compiledBlocks: number;
+  reusedBlocks: number;
+  invalidatedBlocks: number;
+  bodyBytes: number;
+  shardBytes: number;
+  dispatcherBytes: number;
+  helperBytes: number;
+  sharedBodies: number;
+  sharedBytes: number;
+  shareReusedBodies: number;
+  shareReusedRoutes: number;
+}
+
+/** Delay maps are not part of the binding fingerprint: entries carry their own snapshots. */
+function bindingWithDelays(
+  binding: DirectJitBinding,
+  delays: ReadonlyMap<number, DirectJitDelay> | undefined,
+): DirectJitBinding {
+  const rest = { ...binding };
+  delete rest.delayLoops;
+  return delays === undefined ? rest : { ...rest, delayLoops: delays };
+}
+
+function sessionShardSize(binding: DirectJitBinding): number {
+  const size = binding.shardSize;
+  return validIndex(size) && size > 0 ? size : DIRECT_SHARD_SIZE;
+}
+
+/**
+ * Fixed dispatcher shared by every revision of one session. Routes, continuations and status
+ * sets are mutable maps/sets captured by the generated function, so a new instruction only
+ * changes lookups; the generated source and its shape never change after creation.
+ */
+type SessionDispatcher = (frame: DirectJitFrame, deadline: number) => DirectJitRunResult;
+type SessionDispatcherFactory = (
+  routes: ReadonlyMap<number, SessionRoute>,
+  resumes: ReadonlyMap<number, ResidentResume>,
+  rejected: ReadonlySet<number>,
+  isolated: ReadonlySet<number>,
+  runtimeHelpers: typeof helpers,
+) => SessionDispatcher;
+
+class DirectJitSessionImpl implements DirectJitSession {
+  private readonly routes = new Map<number, SessionRoute>();
+  private readonly resumes = new Map<number, ResidentResume>();
+  private readonly rejected = new Set<number>();
+  private readonly isolated = new Set<number>();
+  private readonly owners = new Map<number, ResidentShard>();
+  /** Shared bodies and their live route membership, reclassified only on commits. */
+  private readonly sharedVariants: SharedVariant[] = [];
+  private readonly variantsByKey = new Map<string, SharedVariant[]>();
+  private readonly sharedRoutes = new Map<number, SharedRoute>();
+  private readonly shareStates = new Map<number, ShareCategory>();
+  /** Current valid share marker index, used to recompute only affected physical keys. */
+  private readonly candidateKeys = new Map<number, string>();
+  private readonly candidatesByKey = new Map<string, Set<number>>();
+  private readonly shareRejected: { -readonly [K in keyof DirectJitShareRejectedStats]: number } = {
+    missing: 0,
+    invalid: 0,
+    single: 0,
+    ir: 0,
+    delay: 0,
+    isolated: 0,
+    context: 0,
+  };
+  private nextSharedVariant = 1;
+  private readonly counters: SessionCounters = {
+    batches: 0,
+    routeInstalls: 0,
+    routeRemovals: 0,
+    compiledShards: 0,
+    reusedShards: 0,
+    compiledBlocks: 0,
+    reusedBlocks: 0,
+    invalidatedBlocks: 0,
+    bodyBytes: 0,
+    shardBytes: 0,
+    dispatcherBytes: 0,
+    helperBytes: 0,
+    sharedBodies: 0,
+    sharedBytes: 0,
+    shareReusedBodies: 0,
+    shareReusedRoutes: 0,
+  };
+  private delays: ReadonlyMap<number, DirectJitDelay> | undefined;
+  private compileBinding: DirectJitBinding;
+  private localSlots = 0;
+  private sessionPcs: readonly number[] | undefined = Object.freeze([]);
+  private emitStatsValue: DirectJitEmitStats = emitStats([]);
+  private closed = false;
+  private readonly runFunction: SessionDispatcher;
+
+  constructor(
+    private readonly cache: DirectJitCache,
+    private readonly state: DirectJitCacheState,
+    private readonly binding: DirectJitBinding,
+    private readonly fingerprint: BindingFingerprint,
+  ) {
+    this.delays = binding.delayLoops;
+    this.compileBinding = bindingWithDelays(binding, this.delays);
+    this.runFunction = this.createDispatcher();
+    const helperBefore = this.state.helperBytes;
+    // A cache may have been populated by full builds under another delay map. Their bodies
+    // carry a delay snapshot, so reconcile it before the first shard adopts the entries.
+    const initial = this.reconcileDelays(this.delays);
+    if (initial.size) {
+      this.applyEntryChanges(initial);
+      this.counters.helperBytes += this.state.helperBytes - helperBefore;
+    }
+    this.rebuildAll();
+    this.refreshEmitStats();
+  }
+
+  get sessionFingerprint(): BindingFingerprint {
+    return this.fingerprint;
+  }
+
+  get isDisposed(): boolean {
+    return this.closed;
+  }
+
+  get localCount(): number {
+    return this.localSlots;
+  }
+
+  get shardCount(): number {
+    return this.closed ? 0 : this.state.shards.length;
+  }
+
+  get routeCount(): number {
+    return this.routes.size;
+  }
+
+  get pcs(): readonly number[] {
+    if (this.sessionPcs === undefined)
+      this.sessionPcs = Object.freeze([...this.routes.keys()].sort((a, b) => a - b));
+    return this.sessionPcs;
+  }
+
+  get emitStats(): DirectJitEmitStats {
+    return this.emitStatsValue;
+  }
+
+  has(pc: number): boolean {
+    return !this.closed && this.routes.has(pc);
+  }
+
+  run(frame: DirectJitFrame, deadline: number): DirectJitRunResult {
+    if (this.closed) return 'untranslated';
+    return this.runFunction(frame, deadline);
+  }
+
+  add(instructions: readonly DirectJitInstruction[]): void {
+    this.assertActive();
+    const helperBefore = this.state.helperBytes;
+    const seen = new Set<number>();
+    const staged = new Map<number, StagedChange>();
+    let sharingTouched = false;
+    for (const instruction of instructions) {
+      if (!Number.isFinite(instruction.pc) || seen.has(instruction.pc)) continue;
+      seen.add(instruction.pc);
+      const cached = this.state.entries.get(instruction.pc);
+      if (cached !== undefined && (cached.share !== undefined || cached.shareInvalid))
+        sharingTouched = true;
+      if (!Number.isFinite(instruction.nextPc)) {
+        // The first occurrence of a PC owns it even when that occurrence deletes the entry.
+        staged.set(instruction.pc, {
+          pc: instruction.pc,
+          remove: true,
+          record: undefined,
+          changed: true,
+          metadataOnly: false,
+        });
+        continue;
+      }
+      const delay = delayFingerprint(this.delays?.get(instruction.pc));
+      const marker = readShare(instruction.share);
+      if (instruction.share !== undefined || marker.invalid) sharingTouched = true;
+      if (
+        cached !== undefined &&
+        cached.body === instruction.body &&
+        cached.nextPc === instruction.nextPc &&
+        sameDelay(cached.delay, delay)
+      ) {
+        const compiled = cached.instruction;
+        if (compiled !== undefined) compiled.resumeId = cached.resumeId ?? 0;
+        if (sameShare(cached.share, marker.share) && cached.shareInvalid === marker.invalid) {
+          staged.set(instruction.pc, {
+            pc: instruction.pc,
+            remove: false,
+            record: cached,
+            changed: false,
+            metadataOnly: false,
+          });
+        } else if (cached.share !== undefined) {
+          // Leaving a shared group must not expose the old normal continuation id again:
+          // a suspended frame keeps its old function, and the independent route gets a new id.
+          staged.set(instruction.pc, {
+            pc: instruction.pc,
+            remove: false,
+            record: this.compileRecord(instruction, delay, marker),
+            changed: true,
+            metadataOnly: false,
+          });
+        } else {
+          sharingTouched = true;
+          staged.set(instruction.pc, {
+            pc: instruction.pc,
+            remove: false,
+            record: { ...cached, share: marker.share, shareInvalid: marker.invalid },
+            changed: false,
+            metadataOnly: true,
+          });
+        }
+        continue;
+      }
+      staged.set(instruction.pc, {
+        pc: instruction.pc,
+        remove: false,
+        record: this.compileRecord(instruction, delay, marker),
+        changed: true,
+        metadataOnly: false,
+      });
+    }
+    if (!staged.size) {
+      this.counters.batches++;
+      return;
+    }
+    // Entry and shard commits happen only after every body compiled; a non-`unsupported`
+    // exception therefore leaves the previous route table intact.
+    this.commitChanges(staged, sharingTouched);
+    this.counters.helperBytes += this.state.helperBytes - helperBefore;
+    this.counters.batches++;
+  }
+
+  remove(pcs: readonly number[]): void {
+    this.assertActive();
+    const seen = new Set<number>();
+    const staged = new Map<number, StagedChange>();
+    for (const pc of pcs) {
+      if (!Number.isFinite(pc) || seen.has(pc)) continue;
+      seen.add(pc);
+      if (!this.state.entries.has(pc)) continue;
+      staged.set(pc, {
+        pc,
+        remove: true,
+        record: undefined,
+        changed: true,
+        metadataOnly: false,
+      });
+    }
+    if (!staged.size) return;
+    this.commitChanges(staged, false);
+  }
+
+  updateDelays(delays?: ReadonlyMap<number, DirectJitDelay>): void {
+    this.assertActive();
+    const effective = delays ?? this.binding.delayLoops;
+    this.delays = effective;
+    this.compileBinding = bindingWithDelays(this.binding, effective);
+    const helperBefore = this.state.helperBytes;
+    const staged = this.reconcileDelays(effective);
+    if (!staged.size) return;
+    this.commitChanges(staged, false);
+    this.counters.helperBytes += this.state.helperBytes - helperBefore;
+  }
+
+  clear(): void {
+    this.assertActive();
+    this.counters.routeRemovals += this.routes.size;
+    this.routes.clear();
+    this.resumes.clear();
+    this.rejected.clear();
+    this.isolated.clear();
+    this.owners.clear();
+    this.sharedVariants.length = 0;
+    this.variantsByKey.clear();
+    this.sharedRoutes.clear();
+    this.shareStates.clear();
+    this.candidateKeys.clear();
+    this.candidatesByKey.clear();
+    this.nextSharedVariant = 1;
+    this.state.entries.clear();
+    this.state.constants.length = 0;
+    this.state.resistorSlots.clear();
+    this.state.functions.clear();
+    this.state.shards.length = 0;
+    this.state.nextShard = 1;
+    // `nextResume` intentionally keeps growing: a suspended frame must never observe a
+    // reused identifier pointing at a different body after a clear.
+    this.state.stats.clears++;
+    this.refreshPcs();
+    this.refreshEmitStats();
+  }
+
+  stats(): DirectJitSessionStats {
+    let candidates = 0;
+    for (const pcs of this.candidatesByKey.values()) candidates += pcs.size;
+    let groups = 0;
+    for (const variant of this.sharedVariants)
+      if (variant.functions !== undefined && variant.entries.size > 0) groups++;
+    return Object.freeze({
+      batches: this.counters.batches,
+      routeInstalls: this.counters.routeInstalls,
+      routeRemovals: this.counters.routeRemovals,
+      compiledShards: this.counters.compiledShards,
+      reusedShards: this.counters.reusedShards,
+      compiledBlocks: this.counters.compiledBlocks,
+      reusedBlocks: this.counters.reusedBlocks,
+      invalidatedBlocks: this.counters.invalidatedBlocks,
+      routes: this.routes.size,
+      shards: this.closed ? 0 : this.state.shards.length,
+      bodyBytes: this.counters.bodyBytes,
+      shardBytes: this.counters.shardBytes,
+      dispatcherBytes: this.counters.dispatcherBytes,
+      helperBytes: this.counters.helperBytes,
+      shareCandidates: this.closed ? 0 : candidates,
+      shareGroups: groups,
+      sharedRoutes: this.sharedRoutes.size,
+      shareReusedBodies: this.counters.shareReusedBodies,
+      shareReusedRoutes: this.counters.shareReusedRoutes,
+      shareRejected: Object.freeze({ ...this.shareRejected }),
+      sharedBodies: this.counters.sharedBodies,
+      sharedBytes: this.counters.sharedBytes,
+    });
+  }
+
+  dispose(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.routes.clear();
+    this.resumes.clear();
+    this.rejected.clear();
+    this.isolated.clear();
+    this.owners.clear();
+    this.sharedVariants.length = 0;
+    this.variantsByKey.clear();
+    this.sharedRoutes.clear();
+    this.shareStates.clear();
+    this.candidateKeys.clear();
+    this.candidatesByKey.clear();
+    this.refreshPcs();
+    if (directJitSessions.get(this.cache) === this) directJitSessions.delete(this.cache);
+  }
+
+  private assertActive(): void {
+    if (this.closed) throw new TypeError('Direct JIT session has been disposed');
+  }
+
+  private createDispatcher(): SessionDispatcher {
+    const pcIndex = this.binding.pc.index;
+    const source = [
+      '"use strict";',
+      'function run(F, deadline) {',
+      'const S = F.states;',
+      'if (F.time >= deadline) return "deadline";',
+      'let pc;',
+      'if (F.resume !== 0) {',
+      'if (F.due >= deadline) { F.time = deadline; return "deadline"; }',
+      'F.time = Math.max(F.time, F.due);',
+      'const resume = F.resume;',
+      'const resumed = RESUME.get(resume);',
+      'if (resumed === undefined) throw new TypeError("Unknown direct JIT continuation");',
+      'const next = resumed(F, resume);',
+      'if (typeof next !== "number") return next;',
+      'if (ISOLATED.has(next)) return "invalidated";',
+      'pc = next;',
+      '} else {',
+      'if (F.stopAfterInstruction) return "invalidated";',
+      `pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc);`,
+      '}',
+      'while (true) {',
+      'const route = ROUTES.get(pc);',
+      'if (route === undefined) return REJECTED.has(pc) ? "fallback" : "untranslated";',
+      'const next = typeof route === "function" ? route(F, deadline, pc) : route.step(F, deadline, route.nextPc);',
+      'if (typeof next !== "number") return next;',
+      'pc = next;',
+      '}',
+      '}',
+      'return run;',
+    ].join('\n');
+    this.counters.dispatcherBytes = source.length;
+    const factory = new Function(
+      'ROUTES',
+      'RESUME',
+      'REJECTED',
+      'ISOLATED',
+      'H',
+      source,
+    ) as SessionDispatcherFactory;
+    return factory(this.routes, this.resumes, this.rejected, this.isolated, helpers);
+  }
+
+  /** Recompile only entries whose counter/cycles/pending snapshot changed. */
+  private reconcileDelays(
+    delays: ReadonlyMap<number, DirectJitDelay> | undefined,
+  ): Map<number, StagedChange> {
+    const staged = new Map<number, StagedChange>();
+    for (const [pc, cached] of this.state.entries) {
+      const delay = delayFingerprint(delays?.get(pc));
+      if (sameDelay(cached.delay, delay)) continue;
+      const record = this.compileRecord({ pc, nextPc: cached.nextPc, body: cached.body }, delay, {
+        share: cached.share,
+        invalid: cached.shareInvalid,
+      });
+      staged.set(pc, {
+        pc,
+        remove: false,
+        record,
+        changed: true,
+        metadataOnly: false,
+      });
+    }
+    return staged;
+  }
+
+  private compileRecord(
+    instruction: DirectJitInstruction,
+    delay: DelayFingerprint | undefined,
+    share: ShareStamp,
+  ): CachedInstruction {
+    const compiled = this.compileInstruction(instruction);
+    // A recompiled body always receives a fresh continuation id. Reusing the previous id
+    // would retarget frames suspended in the old body at the new suffix.
+    let resumeId: number | undefined;
+    if (compiled?.duration !== undefined) resumeId = this.state.nextResume++;
+    if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
+    return {
+      body: instruction.body,
+      nextPc: instruction.nextPc,
+      delay,
+      instruction: compiled,
+      resumeId,
+      share: share.share,
+      shareInvalid: share.invalid,
+    };
+  }
+
+  private compileInstruction(instruction: DirectJitInstruction): Instruction | undefined {
+    const capture = (value: unknown): string => `C[${this.state.constants.push(value) - 1}]`;
+    const resistorSlot = (pin: string, resistance: number): number => {
+      const key = `${pin}\0${resistance}`;
+      let slot = this.state.resistorSlots.get(key);
+      if (slot === undefined) {
+        slot = this.state.resistorSlots.size;
+        this.state.resistorSlots.set(key, slot);
+      }
+      return slot;
+    };
+    const resolveFunction: ResolveFunction = (name) => this.resolveFunction(name, resistorSlot);
+    try {
+      return new Instruction(this.compileBinding, capture, resistorSlot, resolveFunction).compile(
+        instruction,
+      );
+    } catch (error) {
+      if (error !== unsupported) throw error;
+      return undefined;
+    }
+  }
+
+  private resolveFunction(
+    name: string,
+    resistorSlot: (pin: string, resistance: number) => number,
+  ): ReturnType<ResolveFunction> {
+    const cached = this.state.functions.get(name);
+    if (cached === null) throw unsupported;
+    if (cached !== undefined) return cached;
+    // Reject cycles and missing callees before any caller body starts executing.
+    this.state.functions.set(name, null);
+    const fn = this.binding.functions?.get(name);
+    if (fn === undefined) throw unsupported;
+    const constants: unknown[] = [];
+    const captureLocal = (value: unknown): string => `C[${constants.push(value) - 1}]`;
+    const body = new Instruction(
+      this.compileBinding,
+      captureLocal,
+      resistorSlot,
+      (callee) => {
+        const nested = this.resolveFunction(callee, resistorSlot);
+        return { ...nested, target: captureLocal(nested.run) };
+      },
+      fn,
+    );
+    const run = body.compileFunction(constants);
+    this.state.helperBytes += body.functionSourceSize;
+    const capture = (value: unknown): string => `C[${this.state.constants.push(value) - 1}]`;
+    const compiled = { target: capture(run), run, body };
+    this.state.functions.set(name, compiled);
+    return compiled;
+  }
+
+  private applyEntryChanges(staged: ReadonlyMap<number, StagedChange>): void {
+    for (const change of staged.values()) {
+      if (change.remove) {
+        if (this.state.entries.delete(change.pc)) {
+          this.state.stats.invalidatedBlocks++;
+          this.counters.invalidatedBlocks++;
+        }
+        this.indexShareCandidate(change.pc);
+        continue;
+      }
+      const record = change.record!;
+      if (change.changed) {
+        if (this.state.entries.has(change.pc)) {
+          this.state.stats.invalidatedBlocks++;
+          this.counters.invalidatedBlocks++;
+        }
+        this.state.entries.set(change.pc, record);
+        this.state.stats.compiledBlocks++;
+        this.counters.compiledBlocks++;
+        if (record.instruction !== undefined) this.counters.bodyBytes += record.instruction.size;
+        this.indexShareCandidate(change.pc);
+      } else {
+        this.state.stats.reusedBlocks++;
+        this.counters.reusedBlocks++;
+        if (change.metadataOnly) {
+          this.state.entries.set(change.pc, record);
+          this.indexShareCandidate(change.pc);
+        }
+      }
+    }
+  }
+
+  /** Keep the per-key candidate index in step with one cache record. */
+  private indexShareCandidate(pc: number): void {
+    const record = this.state.entries.get(pc);
+    const key = record?.share === undefined ? undefined : shareKeyText(record.share);
+    const previous = this.candidateKeys.get(pc);
+    if (previous === key) return;
+    if (previous !== undefined) {
+      const candidates = this.candidatesByKey.get(previous);
+      if (candidates !== undefined) {
+        candidates.delete(pc);
+        if (!candidates.size) this.candidatesByKey.delete(previous);
+      }
+      this.candidateKeys.delete(pc);
+    }
+    if (key !== undefined) {
+      let candidates = this.candidatesByKey.get(key);
+      if (candidates === undefined) {
+        candidates = new Set();
+        this.candidatesByKey.set(key, candidates);
+      }
+      candidates.add(pc);
+      this.candidateKeys.set(pc, key);
+    }
+  }
+
+  private rebuildCandidateIndex(): void {
+    this.candidateKeys.clear();
+    this.candidatesByKey.clear();
+    for (const pc of this.state.entries.keys()) this.indexShareCandidate(pc);
+  }
+
+  private commitChanges(staged: ReadonlyMap<number, StagedChange>, sharingTouched: boolean): void {
+    const affectedKeys = new Set<string>();
+    for (const pc of staged.keys()) {
+      const key = this.candidateKeys.get(pc);
+      if (key !== undefined) affectedKeys.add(key);
+    }
+    this.applyEntryChanges(staged);
+    for (const pc of staged.keys()) {
+      const key = this.candidateKeys.get(pc);
+      if (key !== undefined) affectedKeys.add(key);
+    }
+
+    const sharing =
+      sharingTouched ||
+      affectedKeys.size > 0 ||
+      this.shareStates.size > 0 ||
+      this.sharedRoutes.size > 0;
+    if (!sharing) {
+      this.applyShardChanges(staged);
+      this.refreshEmitStats();
+      return;
+    }
+
+    const layoutPcs = new Set<number>(staged.keys());
+    for (const key of affectedKeys) {
+      const candidates = this.candidatesByKey.get(key);
+      if (candidates === undefined) continue;
+      for (const pc of candidates) layoutPcs.add(pc);
+    }
+    const previousRoutes = new Map<number, SessionRoute | undefined>();
+    for (const pc of layoutPcs) previousRoutes.set(pc, this.routes.get(pc));
+
+    this.reconcileSharedLayout(affectedKeys, new Set(staged.keys()));
+    this.applyIncrementalSharedLayout(staged, layoutPcs, previousRoutes);
+    this.refreshEmitStats();
+  }
+
+  /**
+   * Recompute equivalence groups for affected physical keys only. The comparison runs on
+   * `add`/`remove`/`updateDelays`, never in `run`. Unaffected variants keep their entries,
+   * routes and rejection state; archived variants keep resume identifiers for old frames.
+   */
+  private reconcileSharedLayout(
+    affectedKeys: ReadonlySet<string>,
+    affectedPcs: ReadonlySet<number>,
+  ): void {
+    const assignment = new Map<
+      number,
+      { variant: SharedVariant | undefined; shared: boolean; category: ShareCategory }
+    >();
+    const touchedCandidates = new Set<number>();
+    const emitted = new Set<SharedVariant>();
+    const previousShared = new Set<number>();
+
+    for (const key of affectedKeys) {
+      const candidatePcs = this.candidatesByKey.get(key);
+      const list: ShareCandidateEntry[] = [];
+      if (candidatePcs !== undefined) {
+        for (const pc of candidatePcs) {
+          const record = this.state.entries.get(pc);
+          if (record === undefined || record.share === undefined) continue;
+          if (shareKeyText(record.share) !== key) continue;
+          touchedCandidates.add(pc);
+          const instruction = record.instruction;
+          if (instruction === undefined) {
+            assignment.set(pc, { variant: undefined, shared: false, category: 'context' });
+            continue;
+          }
+          if (instruction.isolated) {
+            assignment.set(pc, { variant: undefined, shared: false, category: 'isolated' });
+            continue;
+          }
+          list.push({
+            pc,
+            nextPc: record.nextPc,
+            record,
+            instruction,
+            share: record.share,
+          });
+        }
+      }
+
+      let variants = this.variantsByKey.get(key);
+      if (variants !== undefined) {
+        for (const variant of variants) {
+          if (variant.functions !== undefined)
+            for (const pc of variant.entries.keys()) previousShared.add(pc);
+          variant.entries = new Map();
+        }
+      }
+
+      list.sort((left, right) => left.pc - right.pc);
+      const partitions: ShareCandidateEntry[][] = [];
+      for (const candidate of list) {
+        let partition: ShareCandidateEntry[] | undefined;
+        for (const current of partitions) {
+          const representative = current[0]!;
+          if (
+            sameDelay(representative.record.delay, candidate.record.delay) &&
+            sameRegion(representative.record.body, candidate.record.body)
+          ) {
+            partition = current;
+            break;
+          }
+        }
+        if (partition === undefined) partitions.push([candidate]);
+        else partition.push(candidate);
+      }
+      for (const partition of partitions) {
+        const representative = partition[0]!;
+        let variant =
+          variants?.find(
+            (existing) =>
+              sameDelay(existing.delay, representative.record.delay) &&
+              sameRegion(existing.body, representative.record.body),
+          ) ?? undefined;
+        if (variant === undefined) {
+          if (variants === undefined) {
+            variants = [];
+            this.variantsByKey.set(key, variants);
+          }
+          variant = {
+            id: this.nextSharedVariant++,
+            key,
+            share: representative.share,
+            delay: representative.record.delay,
+            body: representative.record.body,
+            instruction: representative.instruction,
+            functions: undefined,
+            resumeId: 0,
+            sourceSize: 0,
+            entries: new Map(),
+            attributed: new Set(),
+          };
+          this.sharedVariants.push(variant);
+          variants.push(variant);
+        }
+        for (const candidate of partition) variant.entries.set(candidate.pc, candidate.nextPc);
+        if (variant.functions === undefined && variant.entries.size >= 2) {
+          this.compileSharedVariant(variant);
+          emitted.add(variant);
+        }
+        for (const candidate of partition) {
+          if (variant.functions !== undefined) {
+            assignment.set(candidate.pc, { variant, shared: true, category: 'shared' });
+            continue;
+          }
+          if (list.length === 1) {
+            assignment.set(candidate.pc, {
+              variant,
+              shared: false,
+              category: 'single',
+            });
+            continue;
+          }
+          const sameDelayElsewhere = partitions.some(
+            (other) =>
+              other !== partition && sameDelay(other[0]!.record.delay, representative.record.delay),
+          );
+          assignment.set(candidate.pc, {
+            variant,
+            shared: false,
+            category: sameDelayElsewhere ? 'ir' : 'delay',
+          });
+        }
+      }
+    }
+
+    // Only routes owned by the affected keys may change. Deleting every previous shared PC
+    // first also handles a key move without leaving a stale route behind.
+    for (const pc of previousShared) this.sharedRoutes.delete(pc);
+    for (const key of affectedKeys) {
+      const variants = this.variantsByKey.get(key);
+      if (variants === undefined) continue;
+      for (const variant of variants) {
+        const functions = variant.functions;
+        if (functions === undefined || !variant.entries.size) continue;
+        if (variant.resumeId !== 0 && functions.resume !== undefined)
+          this.resumes.set(variant.resumeId, functions.resume);
+        for (const [pc, nextPc] of variant.entries)
+          this.sharedRoutes.set(pc, { step: functions.step, nextPc, variant });
+      }
+    }
+
+    for (const key of affectedKeys) {
+      const variants = this.variantsByKey.get(key);
+      if (variants === undefined) continue;
+      for (const variant of variants) {
+        if (variant.functions === undefined) {
+          variant.attributed.clear();
+          continue;
+        }
+        let reused = 0;
+        for (const pc of variant.entries.keys()) if (!variant.attributed.has(pc)) reused++;
+        if (emitted.has(variant)) reused = Math.max(0, reused - 1);
+        this.counters.shareReusedBodies += reused;
+        for (const pc of [...variant.attributed])
+          if (!variant.entries.has(pc)) variant.attributed.delete(pc);
+        for (const pc of variant.entries.keys()) variant.attributed.add(pc);
+      }
+    }
+
+    // Reclassify only PCs whose records changed or whose key was recomputed.
+    const statePcs = new Set<number>(affectedPcs);
+    for (const pc of touchedCandidates) statePcs.add(pc);
+    for (const pc of statePcs) {
+      const record = this.state.entries.get(pc);
+      let state: ShareCategory | undefined;
+      if (record !== undefined) {
+        if (record.share !== undefined) {
+          if (record.instruction === undefined) state = 'context';
+          else if (record.instruction.isolated) state = 'isolated';
+          else {
+            const info = assignment.get(pc);
+            if (info !== undefined) state = info.shared ? 'shared' : info.category;
+            else state = this.sharedRoutes.has(pc) ? 'shared' : 'single';
+          }
+        } else if (record.shareInvalid) state = 'invalid';
+        else if (this.shareStates.has(pc)) state = 'missing';
+      }
+      const previous = this.shareStates.get(pc);
+      if (state === undefined) {
+        this.shareStates.delete(pc);
+        continue;
+      }
+      if (state !== 'shared' && previous !== state) this.shareRejected[state]++;
+      this.shareStates.set(pc, state);
+    }
+  }
+
+  /**
+   * Apply only the shard/route consequences of the affected sharing keys. Unchanged shared
+   * variants and independent shards are left untouched, so a small batch never re-syncs all
+   * resident entries.
+   */
+  private applyIncrementalSharedLayout(
+    staged: ReadonlyMap<number, StagedChange>,
+    layoutPcs: ReadonlySet<number>,
+    previousRoutes: ReadonlyMap<number, SessionRoute | undefined>,
+  ): void {
+    const layout = new Map<number, StagedChange>();
+    const detached = new Set<number>();
+    const add = (pc: number): void => {
+      const record = this.state.entries.get(pc);
+      if (record === undefined) {
+        layout.set(pc, {
+          pc,
+          remove: true,
+          record: undefined,
+          changed: true,
+          metadataOnly: false,
+        });
+      } else {
+        layout.set(pc, {
+          pc,
+          remove: false,
+          record,
+          changed: true,
+          metadataOnly: false,
+        });
+      }
+    };
+
+    for (const pc of staged.keys()) {
+      const desired = this.sharedRoutes.get(pc);
+      const before = previousRoutes.get(pc);
+      if (desired !== undefined) {
+        if (!isSharedRoute(before)) detached.add(pc);
+        continue;
+      }
+      add(pc);
+    }
+    for (const pc of layoutPcs) {
+      if (staged.has(pc)) continue;
+      const desired = this.sharedRoutes.get(pc);
+      const before = previousRoutes.get(pc);
+      if (desired !== undefined) {
+        if (!isSharedRoute(before)) detached.add(pc);
+      } else if (isSharedRoute(before)) {
+        add(pc);
+      }
+    }
+
+    // Movement into a shared body only changes shard ownership; its old independent route is
+    // replaced below, so route-removal counters keep their "removed or rejected" meaning.
+    if (detached.size) this.detachFromShards(detached);
+    if (layout.size || detached.size) this.applyShardChanges(layout);
+
+    for (const pc of layoutPcs) {
+      const desired = this.sharedRoutes.get(pc);
+      const current = this.routes.get(pc);
+      if (desired !== undefined) {
+        if (sameSessionRoute(current, desired)) continue;
+        this.routes.set(pc, desired);
+        this.counters.routeInstalls++;
+        this.counters.shareReusedRoutes++;
+      } else if (isSharedRoute(current)) {
+        this.routes.delete(pc);
+        this.counters.routeRemovals++;
+      }
+    }
+    for (const pc of layoutPcs) {
+      const instruction = this.state.entries.get(pc)?.instruction;
+      if (instruction !== undefined && instruction.slots.length > this.localSlots)
+        this.localSlots = instruction.slots.length;
+    }
+    this.refreshPcs();
+  }
+
+  /** Remove entries from independent shards without touching their current routes. */
+  private detachFromShards(pcs: ReadonlySet<number>): void {
+    const touched = new Set<ResidentShard>();
+    for (const pc of pcs) {
+      const owner = this.owners.get(pc);
+      this.owners.delete(pc);
+      if (owner === undefined) continue;
+      const index = owner.entries.findIndex((entry) => entry.pcValue === pc);
+      if (index < 0) continue;
+      owner.entries.splice(index, 1);
+      owner.dirty = true;
+      touched.add(owner);
+    }
+    for (const shard of touched) refreshShard(shard);
+    for (let index = this.state.shards.length - 1; index >= 0; index--)
+      if (!this.state.shards[index]!.entries.length) this.state.shards.splice(index, 1);
+  }
+
+  private compileSharedVariant(variant: SharedVariant): void {
+    const instruction = variant.instruction;
+    if (instruction.duration !== undefined) variant.resumeId = this.state.nextResume++;
+    const lines = sharedBodyProgram(variant, this.compileBinding, this.binding.pc.index);
+    const resume = instruction.duration === undefined ? 'undefined' : `resumeShared${variant.id}`;
+    const source = `"use strict";\n${lines.join('\n')}\nreturn [stepShared${variant.id}, ${resume}];`;
+    const factory = residentShardFactory(source);
+    const [step, resumeFunction] = factory(Object.freeze([...this.state.constants]), helpers);
+    variant.functions = { step, resume: resumeFunction };
+    variant.sourceSize = source.length;
+    this.counters.sharedBodies++;
+    this.counters.sharedBytes += source.length;
+  }
+
+  /**
+   * Reconcile shard ownership with the shared routes, then rebuild the desired route table
+   * in place. Shards keep only independent entries; shared entries never occupy a shard.
+   */
+  private reconcileResidentLayout(): void {
+    const entries: Instruction[] = [];
+    for (const [pc, record] of this.state.entries) {
+      const instruction = record.instruction;
+      if (instruction !== undefined && !this.sharedRoutes.has(pc)) entries.push(instruction);
+    }
+    syncResidentShards(this.state, entries, this.shardSize, this.binding.pc.index);
+    try {
+      this.compileShards();
+    } catch (error) {
+      for (const shard of this.state.shards) shard.dirty = true;
+      throw error;
+    }
+
+    const desired = new Map<number, SessionRoute>();
+    const desiredIsolated = new Set<number>();
+    const desiredRejected = new Set<number>();
+    this.owners.clear();
+    for (const shard of this.state.shards) {
+      const functions = shard.functions;
+      if (functions === undefined) continue;
+      for (const entry of shard.entries) {
+        this.owners.set(entry.pcValue, shard);
+        desired.set(entry.pcValue, functions.step);
+        if (entry.isolated) desiredIsolated.add(entry.pcValue);
+        if (entry.resumeId !== 0 && functions.resume !== undefined)
+          this.resumes.set(entry.resumeId, functions.resume);
+      }
+    }
+    for (const [pc, route] of this.sharedRoutes) {
+      desired.set(pc, route);
+      const functions = route.variant.functions!;
+      if (route.variant.resumeId !== 0 && functions.resume !== undefined)
+        this.resumes.set(route.variant.resumeId, functions.resume);
+    }
+    for (const [pc, record] of this.state.entries)
+      if (record.instruction === undefined) desiredRejected.add(pc);
+
+    for (const pc of [...this.routes.keys()]) {
+      if (desired.has(pc)) continue;
+      this.routes.delete(pc);
+      this.counters.routeRemovals++;
+    }
+    for (const [pc, route] of desired) {
+      if (sameSessionRoute(this.routes.get(pc), route)) continue;
+      this.routes.set(pc, route);
+      this.counters.routeInstalls++;
+      if (isSharedRoute(route)) this.counters.shareReusedRoutes++;
+    }
+
+    this.isolated.clear();
+    for (const pc of desiredIsolated) this.isolated.add(pc);
+    this.rejected.clear();
+    for (const pc of desiredRejected) this.rejected.add(pc);
+    for (const record of this.state.entries.values()) {
+      const instruction = record.instruction;
+      if (instruction !== undefined && instruction.slots.length > this.localSlots)
+        this.localSlots = instruction.slots.length;
+    }
+    this.refreshPcs();
+  }
+
+  private applyShardChanges(staged: ReadonlyMap<number, StagedChange>): void {
+    const pending: Instruction[] = [];
+    const touched = new Set<ResidentShard>();
+    for (const change of staged.values()) {
+      const instruction = change.remove ? undefined : change.record!.instruction;
+      const owner = this.owners.get(change.pc);
+      if (owner !== undefined) {
+        const index = owner.entries.findIndex((entry) => entry.pcValue === change.pc);
+        if (index >= 0) {
+          if (instruction === undefined) {
+            owner.entries.splice(index, 1);
+            owner.dirty = true;
+            touched.add(owner);
+          } else if (owner.entries[index] !== instruction) {
+            owner.entries[index] = instruction;
+            owner.dirty = true;
+            touched.add(owner);
+          }
+          continue;
+        }
+        // The ownership index and the shard content disagreed; rebuild from the new entry.
+        this.owners.delete(change.pc);
+      }
+      if (instruction !== undefined) pending.push(instruction);
+    }
+    for (const shard of touched) refreshShard(shard);
+    for (let index = this.state.shards.length - 1; index >= 0; index--) {
+      if (!this.state.shards[index]!.entries.length) this.state.shards.splice(index, 1);
+    }
+    this.appendPending(pending);
+    let compiled: Set<ResidentShard>;
+    try {
+      compiled = this.compileShards();
+    } catch (error) {
+      // A failed factory may have replaced earlier shard functions before the route table
+      // was touched. Keep those shards dirty so a retry recompiles and installs them too.
+      for (const shard of this.state.shards) shard.dirty = true;
+      throw error;
+    }
+    for (const shard of compiled) this.installShard(shard);
+    for (const change of staged.values()) {
+      const instruction = change.remove ? undefined : change.record!.instruction;
+      if (instruction === undefined) {
+        this.removeRoute(change.pc);
+        if (change.remove) this.rejected.delete(change.pc);
+        else this.rejected.add(change.pc);
+        this.owners.delete(change.pc);
+        continue;
+      }
+      this.rejected.delete(change.pc);
+      if (instruction.slots.length > this.localSlots) this.localSlots = instruction.slots.length;
+    }
+    this.refreshPcs();
+  }
+
+  private appendPending(pending: Instruction[]): void {
+    if (!pending.length) return;
+    pending.sort((left, right) => left.pcValue - right.pcValue);
+    const chains = buildEntryChains(pending, this.binding.pc.index);
+    for (const chain of chains) {
+      const chainSize = chain.reduce((sum, entry) => sum + entry.size, 0);
+      const tail = this.state.shards[this.state.shards.length - 1];
+      if (
+        tail !== undefined &&
+        tail.entries.length > 0 &&
+        chain.length <= this.shardSize &&
+        chainSize <= SHARD_CODE_BUDGET &&
+        tail.sourceSize + chainSize > SHARD_CODE_BUDGET
+      ) {
+        this.newShard();
+      }
+      for (const entry of chain) {
+        let shard = this.state.shards[this.state.shards.length - 1];
+        if (shard === undefined || !shardCanAccept(shard, entry, this.shardSize)) {
+          shard = this.newShard();
+        }
+        shard.entries.push(entry);
+        shard.dirty = true;
+        refreshShard(shard);
+        this.owners.set(entry.pcValue, shard);
+      }
+    }
+  }
+
+  private newShard(): ResidentShard {
+    const shard: ResidentShard = {
+      id: this.state.nextShard++,
+      entries: [],
+      sourceSize: 0,
+      maxSlots: 0,
+      resumable: false,
+      functions: undefined,
+      signature: undefined,
+      dirty: true,
+    };
+    this.state.shards.push(shard);
+    return shard;
+  }
+
+  private compileShards(): Set<ResidentShard> {
+    const compiled = new Set<ResidentShard>();
+    for (const shard of this.state.shards) {
+      if (
+        shard.functions !== undefined &&
+        !shard.dirty &&
+        sameInstructions(shard.signature ?? [], shard.entries)
+      ) {
+        this.state.stats.reusedShards++;
+        this.counters.reusedShards++;
+        continue;
+      }
+      this.counters.shardBytes += compileResidentShard(this.state, shard, this.compileBinding);
+      this.counters.compiledShards++;
+      compiled.add(shard);
+    }
+    return compiled;
+  }
+
+  private installShard(shard: ResidentShard): void {
+    const functions = shard.functions;
+    if (functions === undefined) return;
+    for (const entry of shard.entries) {
+      this.owners.set(entry.pcValue, shard);
+      if (this.routes.get(entry.pcValue) !== functions.step) {
+        this.routes.set(entry.pcValue, functions.step);
+        this.counters.routeInstalls++;
+      }
+      if (entry.resumeId !== 0 && functions.resume !== undefined)
+        this.resumes.set(entry.resumeId, functions.resume);
+      if (entry.isolated) this.isolated.add(entry.pcValue);
+      else this.isolated.delete(entry.pcValue);
+      this.rejected.delete(entry.pcValue);
+    }
+  }
+
+  private removeRoute(pc: number): void {
+    if (this.routes.delete(pc)) this.counters.routeRemovals++;
+    this.isolated.delete(pc);
+  }
+
+  private rebuildAll(): void {
+    this.rebuildCandidateIndex();
+    let sharing =
+      this.candidatesByKey.size > 0 || this.shareStates.size > 0 || this.sharedRoutes.size > 0;
+    for (const record of this.state.entries.values()) {
+      if (record.shareInvalid) {
+        sharing = true;
+        break;
+      }
+    }
+    if (sharing) {
+      this.reconcileSharedLayout(
+        new Set(this.candidatesByKey.keys()),
+        new Set(this.state.entries.keys()),
+      );
+      this.reconcileResidentLayout();
+      return;
+    }
+    const entries: Instruction[] = [];
+    for (const record of this.state.entries.values())
+      if (record.instruction !== undefined) entries.push(record.instruction);
+    syncResidentShards(this.state, entries, this.shardSize, this.binding.pc.index);
+    this.compileShards();
+    this.routes.clear();
+    this.resumes.clear();
+    this.rejected.clear();
+    this.isolated.clear();
+    this.owners.clear();
+    for (const shard of this.state.shards) this.installShard(shard);
+    for (const [pc, record] of this.state.entries)
+      if (record.instruction === undefined) this.rejected.add(pc);
+    this.localSlots = 0;
+    for (const record of this.state.entries.values())
+      if (record.instruction !== undefined && record.instruction.slots.length > this.localSlots)
+        this.localSlots = record.instruction.slots.length;
+    this.refreshPcs();
+  }
+
+  private refreshPcs(): void {
+    this.sessionPcs = undefined;
+  }
+
+  /** One aggregate pass over valid bodies; shared entries count once, rejected entries not. */
+  private refreshEmitStats(): void {
+    const entries: Instruction[] = [];
+    for (const record of this.state.entries.values())
+      if (record.instruction !== undefined) entries.push(record.instruction);
+    this.emitStatsValue = emitStats(entries);
+  }
+
+  private get shardSize(): number {
+    return sessionShardSize(this.binding);
+  }
+}
+
+function createDirectJitSession(
+  binding: DirectJitBinding,
+  suppliedCache?: DirectJitCache,
+): DirectJitSession {
+  if (!validIndex(binding.pc.index) || binding.states.get(binding.pc.name) !== binding.pc.index)
+    throw new TypeError('Invalid direct JIT binding');
+  const cache = suppliedCache ?? createDirectJitCache();
+  const state = cacheState(cache);
+  const fingerprint = bindingFingerprint(binding);
+  const existing = directJitSessions.get(cache);
+  if (existing !== undefined) {
+    if (!existing.isDisposed && sameBinding(existing.sessionFingerprint, fingerprint))
+      return existing;
+    existing.dispose();
+  }
+  if (state.binding !== undefined && !sameBinding(state.binding, fingerprint)) {
+    // Slot indices are embedded in every emitted body; a layout change invalidates all of
+    // them. Programs and disposed sessions keep their own frozen constant snapshots.
+    state.stats.invalidatedBlocks += state.entries.size;
+    state.entries.clear();
+    state.constants.length = 0;
+    state.resistorSlots.clear();
+    state.functions.clear();
+    state.shards.length = 0;
+    state.nextResume = 1;
+    state.nextShard = 1;
+  }
+  state.binding = fingerprint;
+  const session = new DirectJitSessionImpl(cache, state, binding, fingerprint);
+  directJitSessions.set(cache, session);
+  return session;
 }

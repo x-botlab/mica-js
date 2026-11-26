@@ -1,8 +1,12 @@
 import {
   compileDirectJit,
+  type DirectJitBinding,
   type DirectJitFrame,
   type DirectJitHost,
-  type DirectJitProgram,
+  type DirectJitInstruction,
+  type DirectJitSession,
+  type DirectJitSessionStats,
+  type DirectJitShareRejectedStats,
   type ExecutionSignal,
 } from '@mica-js/compiler';
 import { createJitBlockBuilder, validateBoundBlockIR } from '@mica-js/device-model';
@@ -13,6 +17,7 @@ import { body, time } from './execution';
 import type { Instance, InstanceBoard } from './instance';
 import type {
   Dependencies,
+  DirectExecution,
   DirectJitLayout,
   Jit,
   JitInstruction,
@@ -39,25 +44,6 @@ export function syncJitCall(jit: Jit, name: string): unknown {
   if (!step.done) throw new TypeError('Unexpected suspension in synchronous function');
   return step.value;
 }
-/**
- * Program size above which whole-program rebuilds are amortized instead of immediate.
- *
- * Translation only ever adds cache entries, so a compiled program stays valid for every PC it
- * already contains; only a missing PC needs a rebuild. Rebuilding on every new block is
- * quadratic, and that dominated warm-up on a real firmware image (411 blocks: 43 rebuilds and
- * ~1.7 s before any simulated time). Small programs rebuild in milliseconds, so they keep the
- * exact behaviour; only larger ones switch to a stride that grows with the program.
- */
-const DIRECT_REBUILD_LINEAR_LIMIT = 16;
-/** Stride floor once a program exceeds `DIRECT_REBUILD_LINEAR_LIMIT`. */
-const DIRECT_REBUILD_MIN_BLOCKS = 64;
-/** A repeatedly visited translated PC can force a rebuild before the append-only stride. */
-const DIRECT_REBUILD_PATIENCE = 4;
-
-function directRebuildStride(compiled: number): number {
-  return compiled < DIRECT_REBUILD_LINEAR_LIMIT ? 1 : Math.max(DIRECT_REBUILD_MIN_BLOCKS, compiled);
-}
-
 /** Call sites that settle a publication boundary; used only by opt-in diagnostics. */
 export type BoundarySource =
   | 'checkpointPublish'
@@ -69,19 +55,86 @@ export type BoundarySource =
   | 'process'
   | 'other';
 
+/** Runtime-side classifications of a rejected `markDirectBodyShareable` call. */
+export interface DirectShareMarkRejectedStats {
+  /** The marked PC is not an instruction entry of the returned block. */
+  unknownPc: number;
+  /** The same block marked one instruction entry more than once. */
+  duplicate: number;
+  /** The PC is not a non-negative safe integer. */
+  invalidPc: number;
+  /** The byte length is not a positive safe integer. */
+  invalidLength: number;
+  /** The byte range leaves the start region or the borrowed view. */
+  outsideRegion: number;
+  /** The entry was fetched through a different logical window than the start PC. */
+  crossView: number;
+  /** The entry has no code region and would be fetched by the service-PC fallback. */
+  service: number;
+  /** The entry is polling or does not use the primary code memory. */
+  notAdmitted: number;
+}
+
+/** Mutable copy of the compiler's cumulative rejection counters. */
+export type DirectShareRejectedStats = {
+  -readonly [K in keyof DirectJitShareRejectedStats]: number;
+};
+
 /**
  * Deterministic direct-execution counters, kept on the `Jit` itself so `Board.jits` stays the
  * only diagnostic surface: the benchmark reads them instead of patching runtime internals.
  */
 export interface DirectJitStats {
-  /** Successful program builds; one per compile, so observer churn must not move it. */
+  /** Successful fixed-dispatcher installs; observer churn and batches must not move it. */
   directCompiles: number;
-  /** Resident shard functions backing the current direct program. */
+  /** Resident shard functions in the active session. */
   directShards: number;
   directCalls: number;
   directFallbacks: number;
   directDeadlines: number;
   directStopped: number;
+  /** Fixed dispatchers installed; one per successful session creation. */
+  directSessions: number;
+  /** Shard functions emitted across all sessions. */
+  directShardCompiles: number;
+  /** Route entries installed after their body or shard changed. */
+  directRouteInstalls: number;
+  /** Route entries removed because their PC was replaced, rejected or disposed. */
+  directRouteRemovals: number;
+  /** Dispatchable PCs in the active session. */
+  directRoutes: number;
+  /** Dispatch attempts that hit an untranslated or pending PC. */
+  directDispatchMisses: number;
+  /** Instructions the interpreter actually started executing. */
+  directGenericInstructions: number;
+  /** Cumulative generated characters of emitted instruction bodies. */
+  directBodyBytes: number;
+  /** Cumulative generated characters of emitted shard functions. */
+  directShardBytes: number;
+  /** Cumulative generated characters of fixed dispatchers. */
+  directDispatcherBytes: number;
+  /** Cumulative generated characters of synchronous helper functions. */
+  directHelperBytes: number;
+  /** `markDirectBodyShareable` callbacks received while a translation is in progress. */
+  directShareCallbacks: number;
+  /** Marked entries that passed runtime validation across all translations. */
+  directShareCandidates: number;
+  /** Equivalence groups currently backed by a shared body in the active session. */
+  directShareGroups: number;
+  /** Current routes that point at a shared body. */
+  directSharedRoutes: number;
+  /** Cumulative shared step/resume bodies emitted across all sessions. */
+  directSharedBodies: number;
+  /** Cumulative generated characters of emitted shared bodies. */
+  directSharedBytes: number;
+  /** Cumulative marked routes that reused an already emitted shared body. */
+  directShareReusedBodies: number;
+  /** Cumulative route installs that selected a shared body. */
+  directShareReusedRoutes: number;
+  /** Compiler-side classifications for marked entries that stayed independent. */
+  directShareRejected: DirectShareRejectedStats;
+  /** Runtime-side classifications for rejected marks; the entry still executes normally. */
+  directShareMarkRejected: DirectShareMarkRejectedStats;
 }
 
 /**
@@ -133,7 +186,7 @@ type CountedJit = Jit & { directStats?: DirectJitStats };
 interface DirectBarriers {
   stateMask: Int32Array;
   memoryMask: Int32Array;
-  /** Bank layout of the current program; absent until one has been compiled. */
+  /** Bank layout of the active session; absent until one has been compiled. */
   stateIndex?: ReadonlyMap<string, number>;
   memoryIndex?: ReadonlyMap<string, number>;
 }
@@ -164,12 +217,148 @@ function directStats(jit: Jit): DirectJitStats {
     directFallbacks: 0,
     directDeadlines: 0,
     directStopped: 0,
+    directSessions: 0,
+    directShardCompiles: 0,
+    directRouteInstalls: 0,
+    directRouteRemovals: 0,
+    directRoutes: 0,
+    directDispatchMisses: 0,
+    directGenericInstructions: 0,
+    directBodyBytes: 0,
+    directShardBytes: 0,
+    directDispatcherBytes: 0,
+    directHelperBytes: 0,
+    directShareCallbacks: 0,
+    directShareCandidates: 0,
+    directShareGroups: 0,
+    directSharedRoutes: 0,
+    directSharedBodies: 0,
+    directSharedBytes: 0,
+    directShareReusedBodies: 0,
+    directShareReusedRoutes: 0,
+    directShareRejected: {
+      missing: 0,
+      invalid: 0,
+      single: 0,
+      ir: 0,
+      delay: 0,
+      isolated: 0,
+      context: 0,
+    },
+    directShareMarkRejected: {
+      unknownPc: 0,
+      duplicate: 0,
+      invalidPc: 0,
+      invalidLength: 0,
+      outsideRegion: 0,
+      crossView: 0,
+      service: 0,
+      notAdmitted: 0,
+    },
   });
 }
 
-/** Direct execution counters of one JIT; absent until the runtime attempted a direct run. */
+/** Direct execution counters of one JIT; absent until it first attempted an instruction. */
 export function directJitStats(jit: Jit): DirectJitStats | undefined {
   return (jit as CountedJit).directStats;
+}
+
+interface DirectSessionSnapshot {
+  readonly session: DirectJitSession;
+  readonly stats: DirectJitSessionStats;
+}
+
+const directSessionSnapshots = new WeakMap<Jit, DirectSessionSnapshot>();
+
+/**
+ * Fold monotonic session counters into the per-JIT totals and publish the current route and
+ * shard counts. Called after every commit so the benchmark never inspects session internals.
+ */
+function syncDirectSessionStats(jit: Jit, session: DirectJitSession): void {
+  const next = session.stats();
+  const stats = directStats(jit);
+  const previous = directSessionSnapshots.get(jit);
+  const base = previous?.session === session ? previous.stats : undefined;
+  stats.directShardCompiles += next.compiledShards - (base?.compiledShards ?? 0);
+  stats.directRouteInstalls += next.routeInstalls - (base?.routeInstalls ?? 0);
+  stats.directRouteRemovals += next.routeRemovals - (base?.routeRemovals ?? 0);
+  stats.directBodyBytes += next.bodyBytes - (base?.bodyBytes ?? 0);
+  stats.directShardBytes += next.shardBytes - (base?.shardBytes ?? 0);
+  stats.directDispatcherBytes += next.dispatcherBytes - (base?.dispatcherBytes ?? 0);
+  stats.directHelperBytes += next.helperBytes - (base?.helperBytes ?? 0);
+  stats.directShareGroups = next.shareGroups;
+  stats.directSharedRoutes = next.sharedRoutes;
+  stats.directSharedBodies += next.sharedBodies - (base?.sharedBodies ?? 0);
+  stats.directSharedBytes += next.sharedBytes - (base?.sharedBytes ?? 0);
+  stats.directShareReusedBodies += next.shareReusedBodies - (base?.shareReusedBodies ?? 0);
+  stats.directShareReusedRoutes += next.shareReusedRoutes - (base?.shareReusedRoutes ?? 0);
+  stats.directShareRejected.missing +=
+    next.shareRejected.missing - (base?.shareRejected.missing ?? 0);
+  stats.directShareRejected.invalid +=
+    next.shareRejected.invalid - (base?.shareRejected.invalid ?? 0);
+  stats.directShareRejected.single += next.shareRejected.single - (base?.shareRejected.single ?? 0);
+  stats.directShareRejected.ir += next.shareRejected.ir - (base?.shareRejected.ir ?? 0);
+  stats.directShareRejected.delay += next.shareRejected.delay - (base?.shareRejected.delay ?? 0);
+  stats.directShareRejected.isolated +=
+    next.shareRejected.isolated - (base?.shareRejected.isolated ?? 0);
+  stats.directShareRejected.context +=
+    next.shareRejected.context - (base?.shareRejected.context ?? 0);
+  stats.directShards = next.shards;
+  stats.directRoutes = next.routes;
+  directSessionSnapshots.set(jit, { session, stats: next });
+}
+
+/** Drop the active session and publish zero current counts; cumulative totals stay. */
+function releaseDirectSession(jit: Jit): void {
+  const direct = jit.direct;
+  if (direct !== undefined) {
+    syncDirectSessionStats(jit, direct.session);
+    jit.direct = undefined;
+    direct.session.dispose();
+    directSessionSnapshots.delete(jit);
+    jit.directMemories.clear();
+  }
+  const stats = directJitStats(jit);
+  if (stats !== undefined) {
+    stats.directShards = 0;
+    stats.directRoutes = 0;
+    stats.directShareGroups = 0;
+    stats.directSharedRoutes = 0;
+  }
+}
+
+/** Mark the active session stale; an idle session is released immediately. */
+function staleDirectSession(jit: Jit, running: boolean): boolean {
+  const direct = jit.direct;
+  if (direct === undefined) {
+    jit.directStale = false;
+    return false;
+  }
+  jit.directStale = true;
+  if (running || direct.frame.resume !== 0) {
+    // The generated function currently using the session must finish the old prefix/suffix
+    // exactly once; the runtime releases the session when it returns `invalidated`.
+    direct.frame.stopAfterInstruction = true;
+    return true;
+  }
+  releaseDirectSession(jit);
+  jit.directStale = false;
+  return true;
+}
+
+/** Invalidate direct execution because its translation inputs changed. */
+export function invalidateDirect(jit: Jit, cacheInvalid = false): void {
+  if (cacheInvalid) jit.directCacheInvalid = true;
+  jit.directSkip = undefined;
+  staleDirectSession(jit, false);
+}
+
+/** Release the session on explicit registration/board disposal. */
+export function disposeDirect(jit: Jit): void {
+  releaseDirectSession(jit);
+  jit.directStale = false;
+  jit.directSkip = undefined;
+  jit.directMemories.clear();
 }
 
 /** Region that supplies bytes for a logical PC; undefined means the service-PC fallback. */
@@ -183,6 +372,113 @@ function codeRegionFor(jit: Jit, pc: number): JitCodeRegion | undefined {
 function directCodeInstruction(jit: Jit, instruction: JitInstruction): boolean {
   const region = instruction.codeRegion;
   return region === undefined || region.memory === jit.options.code;
+}
+
+/** One cache entry may join the direct session: primary code and no effective polling. */
+function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
+  return (
+    !instruction.polling &&
+    !effectivePolling(jit).has(instruction.pc) &&
+    directCodeInstruction(jit, instruction)
+  );
+}
+
+function directInstruction(jit: Jit, instruction: JitInstruction): DirectJitInstruction {
+  return {
+    pc: instruction.pc,
+    nextPc: instruction.nextPc,
+    body: instruction.body,
+    // Sharing is opt-in per registration; a candidate collected in an earlier translation
+    // of the same option state is only forwarded by a sharing session.
+    ...(jit.options.shareDirectBodies === true && instruction.share !== undefined
+      ? { share: instruction.share }
+      : {}),
+  };
+}
+
+/** One `markDirectBodyShareable` call collected during a synchronous translation. */
+interface DirectShareMark {
+  readonly pc: number;
+  readonly byteLength: number;
+}
+
+/**
+ * Attach validated marks to their translated entries. The block itself is already committed
+ * to the interpreter path, so every rejection only drops sharing for that entry; it never
+ * rejects the translation. Runs once per translated block, never on the `run` hot path.
+ */
+function applyDirectShareMarks(
+  jit: Jit,
+  startRegion: JitCodeRegion | undefined,
+  codeLength: number,
+  instructions: JitInstruction[],
+  marks: readonly DirectShareMark[],
+): void {
+  if (marks.length === 0) return;
+  const indexByPc = new Map<number, number>();
+  for (let index = 0; index < instructions.length; index++) {
+    const pc = instructions[index]!.pc;
+    if (!indexByPc.has(pc)) indexByPc.set(pc, index);
+  }
+  const stats = directStats(jit);
+  const rejected = stats.directShareMarkRejected;
+  const seen = new Set<number>();
+  for (const { pc, byteLength } of marks) {
+    if (!Number.isSafeInteger(pc) || pc < 0) {
+      rejected.invalidPc++;
+      continue;
+    }
+    if (!Number.isSafeInteger(byteLength) || byteLength <= 0) {
+      rejected.invalidLength++;
+      continue;
+    }
+    if (seen.has(pc)) {
+      rejected.duplicate++;
+      continue;
+    }
+    seen.add(pc);
+    const index = indexByPc.get(pc);
+    if (index === undefined) {
+      rejected.unknownPc++;
+      continue;
+    }
+    const instruction = instructions[index]!;
+    const region = instruction.codeRegion;
+    if (region === undefined) {
+      rejected.service++;
+      continue;
+    }
+    // The borrowed view was cut from the start region. An entry fetched through another
+    // window is not physically comparable even when both windows name the same storage.
+    if (startRegion === undefined || region !== startRegion) {
+      rejected.crossView++;
+      continue;
+    }
+    const offset = pc - region.base;
+    if (
+      offset < 0 ||
+      !Number.isSafeInteger(offset + byteLength) ||
+      offset + byteLength > region.size ||
+      offset + byteLength > codeLength
+    ) {
+      rejected.outsideRegion++;
+      continue;
+    }
+    if (!directAdmitted(jit, instruction)) {
+      rejected.notAdmitted++;
+      continue;
+    }
+    instructions[index] = {
+      ...instruction,
+      share: Object.freeze({
+        storage: region.memory,
+        codeVersion: instruction.codeVersion,
+        offset,
+        byteLength,
+      }),
+    };
+    stats.directShareCandidates++;
+  }
 }
 
 function effectivePolling(jit: Jit): ReadonlyMap<number, JitPollingBinding> {
@@ -294,13 +590,12 @@ function ensureMetadata(board: JitRuntimeHost, jit: Jit, regions: readonly JitCo
       for (const [pc, delay] of state.delays) metadata.delays.set(pc, delay);
     }
     if (primary) {
-      jit.directPrograms.clear();
-      jit.directProgramRevision = -1;
-      jit.directSkip = undefined;
-      if (!jit.direct?.frame.resume) {
-        jit.direct = undefined;
-        jit.directRevision = -1;
-      }
+      // Admission, polling and delay snapshots are compile-time facts of the session.
+      invalidateDirect(jit, true);
+    } else if (jit.direct !== undefined && !jit.directStale) {
+      // A secondary provider can still revise aggregated delays. Keep the fixed dispatcher
+      // and let the session recompile only entries whose descriptor changed.
+      updateDirectDelays(jit);
     }
   } catch (cause) {
     throw board.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);
@@ -395,7 +690,12 @@ function entryBlockedNames(jit: Jit): {
   return { states, memories };
 }
 
-function refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
+/**
+ * Refresh observer masks in place and invalidate the session only when the entry barrier
+ * generation changes (the hook discovered a new state or memory dependency). Returns true
+ * when the running session must stop after the current instruction.
+ */
+function refreshDirectGuards(jit: Jit, hookReads?: Dependencies, running = false): boolean {
   let observersChanged = false;
   let entryChanged = false;
   const instance = jit.instance;
@@ -427,7 +727,7 @@ function refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
     hookCount === jit.directHookReads.size &&
     !entryChanged
   )
-    return;
+    return false;
   jit.directObserverRevision = instance.observerRevision;
   for (const [name, slot] of instance.stateResources) {
     // Hook reads are entry barriers; only ordinary subscribers publish dynamically.
@@ -444,17 +744,18 @@ function refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
     else jit.directMemoryGuards.delete(name);
     observersChanged = true;
   }
+  let invalidated = false;
   if (entryChanged && jit.direct !== undefined) {
-    // Entry masks are compile-time facts, so an old resident program cannot be patched.
-    jit.direct = undefined;
-    jit.directPrograms.clear();
-    jit.directRevision = -1;
+    // Entry masks are compile-time facts of every emitted body, so the session cannot be
+    // patched. A running frame stops after its current instruction; an idle one is dropped.
+    invalidated = staleDirectSession(jit, running);
   }
   if (observersChanged) {
-    // Subscriber masks are shared in place: one program survives observer churn.
+    // Subscriber masks are shared in place: one session survives observer churn.
     syncDirectBarriers(jit);
   }
   if (observersChanged || entryChanged) jit.directSkip = undefined;
+  return invalidated;
 }
 /**
  * Direct programs advance `frame.time` between host calls, while the board only adopts the
@@ -564,11 +865,188 @@ interface RuntimeDirectFrame extends DirectJitFrame {
   boundarySettled: boolean;
 }
 
+/** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
+function directDelayLoops(
+  jit: Jit,
+  layout: DirectJitLayout,
+): ReadonlyMap<
+  number,
+  {
+    readonly counter: number;
+    readonly cycles: number;
+    readonly pending?: { readonly state: number; readonly period: number; readonly active: number };
+  }
+> {
+  const delayLoops = new Map<
+    number,
+    {
+      counter: number;
+      cycles: number;
+      pending?: { state: number; period: number; active: number };
+    }
+  >();
+  for (const [headPc, delay] of effectiveDelays(jit)) {
+    const counter = layout.states.get(delay.counter);
+    if (counter === undefined) continue;
+    const pending =
+      delay.pending === undefined
+        ? undefined
+        : {
+            state: layout.states.get(delay.pending.state),
+            period: layout.states.get(delay.pending.period),
+            active: layout.states.get(delay.pending.active),
+          };
+    delayLoops.set(
+      headPc,
+      pending !== undefined &&
+        pending.state !== undefined &&
+        pending.period !== undefined &&
+        pending.active !== undefined
+        ? { counter, cycles: delay.cycles, pending: pending as never }
+        : { counter, cycles: delay.cycles },
+    );
+  }
+  return delayLoops;
+}
+
+/** Binding identity of one session; the compiler keys body and shard reuse off it. */
+function directBinding(jit: Jit, layout: DirectJitLayout): DirectJitBinding {
+  const { states, memories, pins } = layout;
+  const entry = entryBlockedNames(jit);
+  return {
+    states,
+    memories,
+    pins,
+    pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
+    host: true,
+    ...(jit.functions === undefined ? {} : { functions: jit.functions }),
+    split: true,
+    shardSize: DIRECT_SHARD_SIZE,
+    delayLoops: directDelayLoops(jit, layout),
+    entryBlockedStates: entry.states,
+    entryBlockedMemories: entry.memories,
+    blockedStates: jit.directStateGuards,
+    blockedMemories: jit.directMemoryGuards,
+  };
+}
+
+/** Grow the frame's local bank only between runs, never while a suffix is suspended. */
+function growDirectLocals(direct: DirectExecution): void {
+  if (direct.frame.resume === 0 && direct.frame.locals.length < direct.session.localCount)
+    direct.frame.locals.length = direct.session.localCount;
+}
+
+/** Reconcile busy-wait descriptors; the session recompiles only affected entries. */
+function updateDirectDelays(jit: Jit): void {
+  const direct = jit.direct;
+  if (direct === undefined || jit.directStale) return;
+  // A suspended suffix keeps its old function and locals; only the route table may change.
+  direct.session.updateDelays(directDelayLoops(jit, jit.directLayout!));
+  growDirectLocals(direct);
+  syncDirectSessionStats(jit, direct.session);
+}
+
+function addDirectInstructions(jit: Jit, instructions: readonly JitInstruction[]): void {
+  const direct = jit.direct;
+  if (direct === undefined || jit.directStale || direct.frame.resume !== 0) return;
+  const admitted: JitInstruction[] = [];
+  for (const instruction of instructions)
+    if (directAdmitted(jit, instruction)) admitted.push(instruction);
+  // Translation callbacks may append static delay declarations for this same batch.
+  direct.session.updateDelays(directDelayLoops(jit, jit.directLayout!));
+  if (admitted.length) {
+    direct.session.add(admitted.map((instruction) => directInstruction(jit, instruction)));
+    for (const instruction of admitted)
+      jit.directMemories.add(instruction.codeRegion?.memory ?? jit.options.code);
+    growDirectLocals(direct);
+  }
+  syncDirectSessionStats(jit, direct.session);
+}
+
+/**
+ * Commit one translated block to the active session. Overlapping replacements are handled by
+ * the session when idle. While an old suffix is suspended, translation must not retarget it:
+ * the session is marked stale so the suffix finishes once and a fresh session rebuilds.
+ */
+function commitDirectTranslation(
+  jit: Jit,
+  instructions: readonly JitInstruction[],
+  replaced: boolean,
+): void {
+  const direct = jit.direct;
+  if (direct === undefined || jit.directStale) return;
+  if (direct.frame.resume !== 0) {
+    // Do not retarget the suspended instruction. Delay declarations outside its route still
+    // apply to entries that can be reached after the suffix completes.
+    if (replaced) staleDirectSession(jit, false);
+    else updateDirectDelays(jit);
+    return;
+  }
+  addDirectInstructions(jit, instructions);
+}
+
+/** Install the fixed dispatcher and seed it from every admission-eligible cached entry. */
+function ensureDirectSession(board: JitRuntimeHost, jit: Jit): DirectExecution | undefined {
+  if (jit.direct !== undefined) return jit.direct;
+  if (jit.directStale) jit.directStale = false;
+  const layout = directLayout(jit);
+  if (jit.directCacheInvalid) {
+    // Bodies from the previous code generation must never resurface through `rebuildAll`.
+    // A cache that never existed has nothing to clear and must not consume the write marker
+    // that the first real replacement needs.
+    if (jit.directCache !== undefined) compileDirectJit.clearCache(jit.directCache);
+    jit.directCacheInvalid = false;
+  }
+  const cache = (jit.directCache ??= compileDirectJit.createCache());
+  let session: DirectJitSession | undefined;
+  const admitted: JitInstruction[] = [];
+  try {
+    session = compileDirectJit.createSession(directBinding(jit, layout), cache);
+    for (const instruction of jit.cache.values())
+      if (directAdmitted(jit, instruction)) admitted.push(instruction);
+    if (admitted.length)
+      session.add(admitted.map((instruction) => directInstruction(jit, instruction)));
+    session.updateDelays(directDelayLoops(jit, layout));
+  } catch (cause) {
+    session?.dispose();
+    throw cause;
+  }
+  for (const instruction of admitted)
+    jit.directMemories.add(instruction.codeRegion?.memory ?? jit.options.code);
+
+  const barrier = directBarriers(jit);
+  barrier.stateIndex = layout.states;
+  barrier.memoryIndex = layout.memories;
+  const stateMaskWords = Math.ceil(layout.stateNames.length / 32);
+  const memoryMaskWords = Math.ceil(layout.memoryNames.length / 32);
+  if (barrier.stateMask.length !== stateMaskWords)
+    barrier.stateMask = new Int32Array(stateMaskWords);
+  if (barrier.memoryMask.length !== memoryMaskWords)
+    barrier.memoryMask = new Int32Array(memoryMaskWords);
+  syncDirectBarriers(jit);
+
+  const frame = createDirectFrame(board, jit, layout, session, barrier);
+  const execution: DirectExecution = {
+    session,
+    frame,
+    get pcs(): ReadonlySet<number> {
+      return new Set(session.pcs);
+    },
+  };
+  jit.direct = execution;
+  jit.directStale = false;
+  const stats = directStats(jit);
+  stats.directCompiles++;
+  stats.directSessions++;
+  syncDirectSessionStats(jit, session);
+  return execution;
+}
+
 function createDirectFrame(
   board: JitRuntimeHost,
   jit: Jit,
   layout: DirectJitLayout,
-  program: DirectJitProgram,
+  session: DirectJitSession,
   barrier: DirectBarriers,
 ): RuntimeDirectFrame {
   const instance = jit.instance;
@@ -581,7 +1059,7 @@ function createDirectFrame(
     memoryViews: layout.memoryViews,
     pins: pinObjects,
     resistors: [],
-    locals: new Array(program.localCount),
+    locals: new Array(session.localCount),
     stateDirty: new Int32Array(Math.ceil(layout.stateNames.length / 32)),
     memoryDirty: new Int32Array(Math.ceil(layout.memoryNames.length / 32)),
     time: board.time,
@@ -610,7 +1088,11 @@ function createDirectFrame(
       flushDirect(board, instance, layout, frame);
       // Writeback has completed before the boundary observes the published state.
       checkpointBoundary(board, checkpointStats, 'checkpointPublish');
-      if (jit.directProgramRevision === -1 || !board.canContinueDirect(jit, frame.due)) {
+      if (
+        jit.directStale ||
+        jit.direct?.session !== session ||
+        !board.canContinueDirect(jit, frame.due)
+      ) {
         frame.boundarySettled = true;
         if (checkpointStats !== undefined) checkpointStats.exits++;
         return false;
@@ -632,15 +1114,12 @@ function createDirectFrame(
         if (emptySuffix) board.time = frame.time;
         else flushDirect(board, instance, layout, frame);
         checkpointBoundary(board, checkpointStats, 'checkpointFinish');
-        const direct = jit.direct;
         const nextPc = frame.states[pcIndex] as number;
         if (
-          jit.directProgramRevision === -1 ||
-          direct?.frame !== frame ||
-          !direct.pcs.has(nextPc) ||
+          jit.directStale ||
+          jit.direct?.session !== session ||
+          !session.has(nextPc) ||
           jit.directSkip === nextPc ||
-          (jit.directRevision !== jit.revision &&
-            jit.revision - jit.directRevision >= directRebuildStride(direct.pcs.size)) ||
           frame.time >= deadline ||
           board.events.time < deadline ||
           (!emptySuffix && !board.canContinueDirect(jit, frame.time))
@@ -649,9 +1128,17 @@ function createDirectFrame(
           if (checkpointStats !== undefined) checkpointStats.exits++;
           return false;
         }
-        // Program membership excludes polling/secondary-code PCs. Barriers may still
-        // have changed during reactions; the next generated block checks the refreshed masks.
-        if (jit.directObserverRevision !== instance.observerRevision) refreshDirectGuards(jit);
+        // Route membership excludes polling/secondary-code PCs. Barriers may still have
+        // changed during reactions; the next generated block checks the refreshed masks.
+        if (jit.directObserverRevision !== instance.observerRevision) {
+          // A new entry-barrier dependency can only take effect without running another
+          // instruction: the current generated shard function must return first.
+          if (refreshDirectGuards(jit, undefined, true)) {
+            frame.boundarySettled = true;
+            if (checkpointStats !== undefined) checkpointStats.exits++;
+            return false;
+          }
+        }
         frame.stopAfterInstruction = false;
         board.current = instance;
         if (checkpointStats !== undefined) checkpointStats.continues++;
@@ -664,10 +1151,20 @@ function createDirectFrame(
   (frame as BarrierFrame).blockedMemories = barrier.memoryMask;
   return frame;
 }
-function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): boolean {
+type DirectOutcome = 'ran' | 'fallback' | 'assembly' | 'assembly-progressed' | 'declined';
+
+/**
+ * Run the fixed dispatcher. `untranslated`/`pending` return to `runJit` as an assembly
+ * request; `fallback` means the compiler rejected a PC and the interpreter must take it.
+ */
+function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): DirectOutcome {
   const instance = jit.instance;
   let pending = Boolean(jit.direct?.frame.resume);
   if (!pending) {
+    if (jit.directStale) {
+      releaseDirectSession(jit);
+      jit.directStale = false;
+    }
     const pc = finite(instance.states.get(jit.options.pc), 'pc');
     const region = codeRegionFor(jit, pc);
     if (
@@ -677,142 +1174,11 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
       effectivePolling(jit).has(pc) ||
       jit.cache.get(pc)?.polling
     )
-      return false;
+      return 'declined';
     refreshDirectGuards(jit, hookReads);
-    if (jit.directSkip === pc) return false;
-    // An append-only translation revision leaves compiled bodies valid. Reuse them as long
-    // as the current program covers this PC. Amortize rebuilds over a stride of new blocks,
-    // but count repeat dispatches per translated PC so a hot path catches up promptly
-    // without rebuilding for each PC visited once during initialization.
-    if (jit.directRevision !== jit.revision) {
-      const compiled = jit.direct?.pcs.size ?? 0;
-      const stale = jit.revision - jit.directRevision;
-      const stride = directRebuildStride(compiled);
-      const covered = jit.direct?.pcs.has(pc) === true;
-      const misses = covered ? 0 : (jit.directMisses.get(pc) ?? 0);
-      const rebuild =
-        jit.direct === undefined || stale >= stride || misses >= DIRECT_REBUILD_PATIENCE;
-
-      if (!rebuild) {
-        if (!covered) {
-          // The interpreter runs this instruction; the catch-up rebuild picks it up. It is
-          // still a direct attempt that fell back, so the counters keep describing "how many
-          // dispatches reached the compiled program" rather than where the decision was made.
-          const stats = directStats(jit);
-          stats.directCalls++;
-          stats.directFallbacks++;
-          if (jit.cache.has(pc)) jit.directMisses.set(pc, misses + 1);
-
-          return false;
-        }
-        // Covered: reuse the current program and fall through to the shared execution tail.
-      } else {
-        if (jit.directProgramRevision !== jit.revision) {
-          // Code-memory replacement resets this marker to -1. The translated cache is gone, so
-          // cached instruction bodies must go with it; old programs stay self-contained.
-          if (jit.directProgramRevision === -1 && jit.directCache !== undefined)
-            compileDirectJit.clearCache(jit.directCache);
-          jit.directPrograms.clear();
-          jit.directProgramRevision = jit.revision;
-        }
-        const layout = directLayout(jit);
-        const instructions = [...jit.cache.values()].filter(
-          (instruction) =>
-            !instruction.polling &&
-            !effectivePolling(jit).has(instruction.pc) &&
-            directCodeInstruction(jit, instruction),
-        );
-        /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
-        const delayLoops = new Map<
-          number,
-          {
-            counter: number;
-            cycles: number;
-            pending?: { state: number; period: number; active: number };
-          }
-        >();
-        for (const [headPc, delay] of effectiveDelays(jit)) {
-          const counter = layout.states.get(delay.counter);
-          if (counter === undefined) continue;
-          const pending =
-            delay.pending === undefined
-              ? undefined
-              : {
-                  state: layout.states.get(delay.pending.state),
-                  period: layout.states.get(delay.pending.period),
-                  active: layout.states.get(delay.pending.active),
-                };
-          delayLoops.set(
-            headPc,
-            pending !== undefined &&
-              pending.state !== undefined &&
-              pending.period !== undefined &&
-              pending.active !== undefined
-              ? { counter, cycles: delay.cycles, pending: pending as never }
-              : { counter, cycles: delay.cycles },
-          );
-        }
-        // Observer guards stay out of the key: blocks test them only when writing, so one
-        // program serves every observer set. Entry guards participate in the binding
-        // fingerprint because they change compile-time admission. The full delay descriptor
-        // also participates because it changes the emitted guard.
-        const key = JSON.stringify([...delayLoops].sort(([left], [right]) => left - right));
-        const cached = jit.directPrograms.get(key);
-        if (cached) {
-          jit.direct = cached;
-          jit.directRevision = jit.revision;
-        } else {
-          const { states, memories, pins } = layout;
-          const entry = entryBlockedNames(jit);
-          const cache = (jit.directCache ??= compileDirectJit.createCache());
-          const binding = {
-            states,
-            memories,
-            pins,
-            pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
-            host: true,
-            ...(jit.functions === undefined ? {} : { functions: jit.functions }),
-            split: true,
-            shardSize: DIRECT_SHARD_SIZE,
-            delayLoops,
-            entryBlockedStates: entry.states,
-            entryBlockedMemories: entry.memories,
-            blockedStates: jit.directStateGuards,
-            blockedMemories: jit.directMemoryGuards,
-          };
-          const program = compileDirectJit(instructions, binding, cache);
-          jit.directRevision = jit.revision;
-          jit.directMisses.clear();
-          const stats = directStats(jit);
-
-          stats.directShards = program?.shards ?? 0;
-          if (program) stats.directCompiles++;
-          const barrier = directBarriers(jit);
-          barrier.stateIndex = states;
-          barrier.memoryIndex = memories;
-          const stateMaskWords = Math.ceil(layout.stateNames.length / 32);
-          const memoryMaskWords = Math.ceil(layout.memoryNames.length / 32);
-          if (barrier.stateMask.length !== stateMaskWords)
-            barrier.stateMask = new Int32Array(stateMaskWords);
-          if (barrier.memoryMask.length !== memoryMaskWords)
-            barrier.memoryMask = new Int32Array(memoryMaskWords);
-          syncDirectBarriers(jit);
-          jit.direct = program
-            ? {
-                program,
-                pcs: new Set(program.pcs),
-                frame: createDirectFrame(board, jit, layout, program, barrier),
-              }
-            : undefined;
-          // A declined program must not be cached, or the key would keep answering `undefined`.
-          if (!jit.direct) jit.directPrograms.delete(key);
-          // One program covers every subscriber set because its write masks are shared and
-          // refreshed in place; entry-hook changes clear this map above.
-          else jit.directPrograms.set(key, jit.direct);
-        }
-      }
-    }
-    if (!jit.direct) return false;
+    if (jit.directSkip === pc) return 'declined';
+    if (jit.direct === undefined && ensureDirectSession(board, jit) === undefined)
+      return 'declined';
   }
   const direct = jit.direct!;
   const frame = direct.frame as RuntimeDirectFrame;
@@ -822,25 +1188,36 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     frame.time = board.time;
     // The frame starts clean and flushDirect clears both banks, including the fault path.
     const start = board.time;
-    let reason: ReturnType<DirectJitProgram['run']>;
+    let reason: ReturnType<DirectJitSession['run']>;
     let wrote: boolean;
     const stats = directStats(jit);
     stats.directCalls++;
     try {
       // Resource barriers exclude intermediate observers; real events retain exact deadlines.
-      reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
+      reason = direct.session.run(frame, Math.min(board.executionEnd, board.events.time));
     } finally {
       wrote = flushDirect(board, instance, layout, frame);
     }
-    // A fallback with no flushed slot and no elapsed time did not execute anything; the cached
-    // entry PC can safely be interpreted. A zero-duration block can still write state/PC before
-    // the dispatcher rejects the next uncompiled PC: `wrote` records that prefix, so the caller
-    // must re-read the flushed PC instead of replaying the old one.
+    const progressed = wrote || board.time !== start;
+    // An assembly request that executed nothing is not a settled boundary; the scheduler
+    // translates and retries in the same turn. A fallback with no progress is likewise left
+    // for the interpreter without a boundary.
     if (frame.boundarySettled) frame.boundarySettled = false;
-    else if (reason !== 'fallback' || wrote || board.time !== start) board.boundary('runDirect');
+    else if (
+      reason === 'fallback' || reason === 'untranslated' || reason === 'pending' ? progressed : true
+    )
+      board.boundary('runDirect');
+    if (reason === 'untranslated' || reason === 'pending') {
+      stats.directDispatchMisses++;
+      if (jit.directStale && frame.resume === 0) {
+        releaseDirectSession(jit);
+        jit.directStale = false;
+      }
+      return progressed ? 'assembly-progressed' : 'assembly';
+    }
     if (reason === 'fallback') {
       const nextPc = finite(instance.states.get(jit.options.pc), 'pc');
-      // Polling PCs are deliberately absent from direct programs. Reaching one is a normal
+      // Polling PCs are deliberately absent from direct sessions. Reaching one is a normal
       // shard boundary, not a failed direct dispatch, so it must neither compound fallback
       // statistics nor poison the next interpreter attempt for this PC.
       const polling = effectivePolling(jit).has(nextPc) || jit.cache.get(nextPc)?.polling;
@@ -848,27 +1225,34 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
         stats.directFallbacks++;
         jit.directSkip = nextPc;
       }
-      if (!wrote && board.time === start && board.time < board.executionEnd) return false;
+      if (!progressed && board.time < board.executionEnd) return 'fallback';
     } else if (reason === 'stopped') {
       stats.directStopped++;
       jit.stopped = true;
-      return true;
+      if (jit.directStale && frame.resume === 0) {
+        releaseDirectSession(jit);
+        jit.directStale = false;
+      }
+      return 'ran';
     } else if (reason === 'invalidated') {
       frame.stopAfterInstruction = false;
-      // An electrical publication or a resumed suffix can return "invalidated" without
-      // invalidating any code. An append-only revision must still honour the rebuild stride.
-      // Primary code writes / metadata changes explicitly reset the program revision.
-      if (jit.directProgramRevision === -1 && frame.resume === 0) {
-        jit.direct = undefined;
-        jit.directRevision = -1;
+      // The old suffix completed after its inputs changed; drop the session before a new
+      // turn rebuilds it from the current translation cache.
+      if (jit.directStale && frame.resume === 0) {
+        releaseDirectSession(jit);
+        jit.directStale = false;
       }
     } else stats.directDeadlines++;
+    if (jit.direct === undefined) {
+      board.queueJit(jit);
+      return 'ran';
+    }
     // Publish and settle the whole boundary first. Without intervening scheduler work,
     // an already-started suffix can resume at its wake time without a queue round trip.
     // A metadata provider must still be checked by runJit before resumption.
     if (frame.resume) {
       const wake = Math.max(frame.due, board.time);
-      if (jit.metadata === undefined && board.canContinueDirect(jit, wake)) {
+      if (jit.metadata === undefined && !jit.directStale && board.canContinueDirect(jit, wake)) {
         board.time = wake;
         board.current = instance;
         pending = true;
@@ -876,12 +1260,70 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
       }
       if (wake > board.time) {
         board.events.push(wake, () => board.queueJit(jit));
-        return true;
+        return 'ran';
       }
     }
     board.queueJit(jit);
+    return 'ran';
+  }
+}
+
+/** A PC is ready for direct execution when its translation is not polling or secondary. */
+function directPcAdmitted(jit: Jit, pc: number): boolean {
+  const region = codeRegionFor(jit, pc);
+  if (region !== undefined && region.memory !== jit.options.code) return false;
+  if (effectivePolling(jit).has(pc)) return false;
+  return jit.cache.get(pc)?.polling !== true;
+}
+
+/**
+ * Satisfy one assembly request without replaying the boundary that asked for it. A missing
+ * cache entry uses the same translation path as the interpreter; an existing entry is simply
+ * added because it may have been translated while an old suffix was still suspended.
+ */
+function assembleDirect(board: JitRuntimeHost, jit: Jit, pc: number): boolean {
+  // The dispatcher can hand back an alias/service PC after executing a prefix. Refresh that
+  // region before deciding admission or translating it.
+  if (jit.metadata !== undefined) ensureMetadataForPc(board, jit, pc);
+  const direct = jit.direct;
+  if (direct === undefined || jit.directStale || direct.frame.resume !== 0) return false;
+  if (!directPcAdmitted(jit, pc)) return false;
+  let instruction = jit.cache.get(pc);
+  if (instruction === undefined) {
+    translateBlock(board, jit, pc);
+    instruction = jit.cache.get(pc);
+    return instruction !== undefined;
+  }
+  if (!direct.session.has(pc)) addDirectInstructions(jit, [instruction]);
+  return true;
+}
+
+/**
+ * Handle `untranslated` from the dispatcher. Hooks and polling `consume` already ran for this
+ * boundary, so they are never repeated here. At most one retry keeps a rejected body from
+ * looping; a progressed prefix that still cannot continue direct yields to the scheduler so
+ * the next instruction gets its own boundary.
+ */
+function retryDirectAfterAssembly(board: JitRuntimeHost, jit: Jit, progressed: boolean): boolean {
+  if (progressed) {
+    // The prefix already settled a boundary and may have queued reactions, ready JITs or
+    // events. Never execute the flushed successor before the scheduler observes them:
+    // translation and admission belong to the next turn, which reruns hook and polling.
+    board.queueJit(jit);
     return true;
   }
+  if (jit.direct === undefined || jit.directStale) return false;
+  const pc = finite(jit.instance.states.get(jit.options.pc), 'pc');
+  if (!assembleDirect(board, jit, pc)) return false;
+  const retried = runDirect(board, jit);
+  if (retried === 'ran') return true;
+  // The retry may have completed this instruction and landed on another miss. The
+  // interpreter's `pc` is stale, so the scheduler owns the next boundary.
+  if (retried === 'assembly-progressed') {
+    board.queueJit(jit);
+    return true;
+  }
+  return false;
 }
 function pollingDependencies(
   jit: Jit,
@@ -990,6 +1432,97 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
   }
   throw new TypeError('Invalid JIT suspension');
 }
+/**
+ * Translate one PC, atomically publish the block's cache entries, and commit its admitted
+ * entries to the active session. Reused by both the interpreter path and assembly retries.
+ */
+function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly JitInstruction[] {
+  const prior = board.phase;
+  board.phase = 'translate';
+  let valid = true;
+  let marking = false;
+  try {
+    const codeRegion = codeRegionFor(jit, pc);
+    const codeMemory = codeRegion?.memory ?? jit.options.code;
+    const memory = jit.instance.memory(codeMemory);
+    const bytes =
+      codeRegion === undefined || codeRegion.size >= memory.length
+        ? memory
+        : memory.subarray(0, codeRegion.size);
+    const code = bytesView(bytes, () => {
+      if (!valid) throw board.error('OBJECT_DISPOSED', 'Translation view expired', jit.instance);
+    });
+    // Marks are only collected while the synchronous translate callback is on the stack.
+    // A later call through a retained reference sees `marking === false` and is ignored.
+    const shareMarks: DirectShareMark[] | undefined =
+      jit.options.shareDirectBodies === true ? [] : undefined;
+    marking = shareMarks !== undefined;
+    const result = jit.options.translate(
+      Object.freeze({
+        pc,
+        code: code as import('../types').BorrowedBytes,
+        codeBase: codeRegion?.base ?? 0,
+        codeVersion: jit.instance.codeVersion(codeMemory),
+        ...(shareMarks === undefined
+          ? {}
+          : {
+              markDirectBodyShareable: (markPc: number, byteLength: number): void => {
+                if (!marking) return;
+                directStats(jit).directShareCallbacks++;
+                shareMarks.push({ pc: markPc, byteLength });
+              },
+            }),
+      }),
+      createJitBlockBuilder({ device: jit.model }),
+    );
+    acceptSync(result);
+    marking = false;
+    const block = validateBoundBlockIR(result, jit.model);
+    if (block.instructions[0]?.pc !== pc) throw new TypeError('Translated first pc does not match');
+    const instructions = block.instructions.map((instruction) => {
+      const region = codeRegionFor(jit, instruction.pc);
+      return {
+        pc: instruction.pc,
+        nextPc: instruction.nextPc,
+        body: instruction.body,
+        polling: isPollingInstruction(instruction.body, instruction.pc, jit.options.pc),
+        execute: body(instruction.body),
+        codeRegion: region,
+        codeVersion: jit.instance.codeVersion(region?.memory ?? jit.options.code),
+      };
+    });
+    if (shareMarks !== undefined)
+      applyDirectShareMarks(jit, codeRegion, code.length, instructions, shareMarks);
+    // Check the old cache before publishing: an overlapping block can replace a routed body
+    // instead of only adding PCs.
+    const replaced = instructions.some((entry) => jit.cache.has(entry.pc));
+    // Match the first instruction when a block contains a repeated PC.
+    for (let index = instructions.length - 1; index >= 0; index--) {
+      const entry = instructions[index]!;
+      jit.cache.set(entry.pc, entry);
+      jit.cacheMemories.add(entry.codeRegion?.memory ?? jit.options.code);
+    }
+    // A block may legally span multiple PCs. Every entry gets its own logical region; direct
+    // sessions only admit primary/fallback entries. The start region only supplies the
+    // translate-time byte view and codeVersion.
+    if (
+      instructions.some(
+        (entry) => entry.codeRegion === undefined || entry.codeRegion.memory === jit.options.code,
+      )
+    )
+      jit.revision++;
+    jit.directSkip = undefined;
+    commitDirectTranslation(jit, instructions, replaced);
+    return instructions;
+  } catch (cause) {
+    throw board.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);
+  } finally {
+    valid = false;
+    marking = false;
+    board.phase = prior;
+  }
+}
+
 export function runJit(board: JitRuntimeHost, jit: Jit): void {
   jit.queued = false;
   if (!jit.active || jit.stopped) return;
@@ -999,7 +1532,11 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
     ensureMetadataForPc(board, jit, pc);
   }
   if (jit.direct?.frame.resume) {
-    runDirect(board, jit);
+    const outcome = runDirect(board, jit);
+    // A completed suffix can land on an untranslated PC. Its old boundary is already
+    // settled, so re-queue: the next turn owns hook/polling admission and translation.
+    if (outcome === 'assembly' || outcome === 'assembly-progressed')
+      retryDirectAfterAssembly(board, jit, true);
     return;
   }
   if (!jit.execution) {
@@ -1031,6 +1568,12 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       hookPending = handled;
     }
     const pc = finite(jit.instance.states.get(jit.options.pc), 'pc');
+    if (jit.metadata !== undefined && hook !== undefined) {
+      // `beforeInstruction` may redirect the PC or replace code. The translate/polling/Direct
+      // decision below is for the final location, so its region must be refreshed after the
+      // hook even though the entry metadata was already checked at the top of this turn.
+      ensureMetadataForPc(board, jit, pc);
+    }
     if (board.execution === 'throughput') {
       const declaration = effectivePolling(jit).get(pc);
       if (declaration) {
@@ -1057,81 +1600,22 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
         }
         if (declaration.consume) jit.instance.syncCall(declaration.consume);
       }
-      if (!hookPending && board.jits.length === 1 && runDirect(board, jit, hookReads)) return;
+      if (!hookPending && board.jits.length === 1) {
+        const outcome = runDirect(board, jit, hookReads);
+        if (outcome === 'ran') return;
+        if (outcome === 'assembly' || outcome === 'assembly-progressed') {
+          if (retryDirectAfterAssembly(board, jit, outcome === 'assembly-progressed')) return;
+        }
+      }
     }
     let instruction = jit.cache.get(pc);
     if (!instruction) {
-      const prior = board.phase;
-      board.phase = 'translate';
-      let valid = true;
-      try {
-        const codeRegion = codeRegionFor(jit, pc);
-        const codeMemory = codeRegion?.memory ?? jit.options.code;
-        const memory = jit.instance.memory(codeMemory);
-        const bytes =
-          codeRegion === undefined || codeRegion.size >= memory.length
-            ? memory
-            : memory.subarray(0, codeRegion.size);
-        const code = bytesView(bytes, () => {
-          if (!valid)
-            throw board.error('OBJECT_DISPOSED', 'Translation view expired', jit.instance);
-        });
-        const result = jit.options.translate(
-          Object.freeze({
-            pc,
-            code: code as import('../types').BorrowedBytes,
-            codeBase: codeRegion?.base ?? 0,
-            codeVersion: jit.instance.codeVersion(codeMemory),
-          }),
-          createJitBlockBuilder({ device: jit.model }),
-        );
-        acceptSync(result);
-        const block = validateBoundBlockIR(result, jit.model);
-        if (block.instructions[0]?.pc !== pc)
-          throw new TypeError('Translated first pc does not match');
-        const instructions = block.instructions.map((instruction) => {
-          const region = codeRegionFor(jit, instruction.pc);
-          return {
-            pc: instruction.pc,
-            nextPc: instruction.nextPc,
-            body: instruction.body,
-            polling: isPollingInstruction(instruction.body, instruction.pc, jit.options.pc),
-            execute: body(instruction.body),
-            codeRegion: region,
-          };
-        });
-        // An overlapping translation can replace a covered body instead of just adding PCs.
-        // It runs only after any direct continuation has drained, so discard that program now.
-        if (instructions.some((entry) => jit.direct?.pcs.has(entry.pc))) {
-          jit.direct = undefined;
-          jit.directPrograms.clear();
-        }
-        // Match the first instruction when a block contains a repeated PC.
-        for (let index = instructions.length - 1; index >= 0; index--) {
-          const entry = instructions[index]!;
-          jit.cache.set(entry.pc, entry);
-          jit.cacheMemories.add(entry.codeRegion?.memory ?? jit.options.code);
-        }
-        // A block may legally span multiple PCs. Every entry gets its own logical region;
-        // direct programs only admit primary/fallback entries. The start region only supplies
-        // the translate-time byte view and codeVersion.
-        if (
-          instructions.some(
-            (entry) =>
-              entry.codeRegion === undefined || entry.codeRegion.memory === jit.options.code,
-          )
-        )
-          jit.revision++;
-        jit.directSkip = undefined;
-        instruction = instructions[0]!;
-      } catch (cause) {
-        throw board.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);
-      } finally {
-        valid = false;
-        board.phase = prior;
-      }
+      const instructions = translateBlock(board, jit, pc);
+      instruction = instructions[0]!;
     }
     jit.currentPc = pc;
+    if (board.execution === 'throughput' && board.jits.length === 1)
+      directStats(jit).directGenericInstructions++;
     jit.automaticPolling =
       board.execution === 'throughput' &&
       board.jits.length === 1 &&

@@ -3882,3 +3882,848 @@ test('a conditional redirect and the tail elapse share one duration slot', () =>
     assert.equal(skipped.resume, 0);
   }
 });
+
+/** Small direct block: write a constant to `x`, elapse, then continue at `nextPc`. */
+function directBlock(pc, nextPc, value, duration = 1) {
+  const b = builder();
+  b.write('x', b.constant(value));
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+test('incremental session keeps one dispatcher and routes batches across sealed shards', () => {
+  const cache = compileDirectJit.createCache();
+  const session = compileDirectJit.createSession({ ...binding, shardSize: 2 }, cache);
+  assert.equal(session.shardCount, 0);
+  assert.equal(session.routeCount, 0);
+  assert.deepEqual(session.pcs, []);
+  const empty = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(empty, 10), 'untranslated');
+  const dispatcher = session.stats().dispatcherBytes;
+  assert(dispatcher > 0);
+
+  const blocks = [
+    directBlock(0, 2, 1),
+    directBlock(2, 4, 2),
+    directBlock(4, 6, 3),
+    directBlock(6, 8, 4),
+    directBlock(8, 0, 5),
+  ];
+  const firstSources = captureFactories(() => session.add(blocks.slice(0, 3)));
+  assert.equal(firstSources.length, 2, 'two shards, and no dispatcher rebuild');
+  assert(firstSources.every((source) => !source.includes('function run(')));
+  assert.equal(session.shardCount, 2);
+  assert.equal(session.routeCount, 3);
+  const sealedId = firstSources
+    .map((source) => /function stepShard(\d+)/.exec(source)[1])
+    .sort((left, right) => Number(left) - Number(right))[0];
+
+  const secondSources = captureFactories(() => session.add(blocks.slice(3)));
+  assert.equal(secondSources.length, 2, 'rebuild the open tail and add one shard');
+  assert(
+    secondSources.every((source) => !source.includes(`function stepShard${sealedId}(`)),
+    'the sealed shard function is not recreated',
+  );
+  assert(secondSources.every((source) => !source.includes('function run(')));
+  assert.equal(session.stats().dispatcherBytes, dispatcher, 'dispatcher source stays fixed');
+  assert.equal(session.shardCount, 3);
+  assert.equal(session.routeCount, 5);
+  assert.deepEqual(session.pcs, [0, 2, 4, 6, 8]);
+  assert.equal(session.stats().shards, 3);
+  assert.equal(session.stats().routes, 5);
+  assert(session.stats().reusedShards > 0);
+  assert.equal(session.stats().compiledShards, 4);
+  assert(session.stats().bodyBytes > 0);
+  assert(session.stats().shardBytes > 0);
+  assert.equal(compileDirectJit.cacheStats(cache).entries, 5);
+  assert.equal(compileDirectJit.cacheStats(cache).compiledBlocks, 5);
+
+  const f = frame(session, [0, 0, 0, true, 0, 0]);
+  const reference = generic(blocks, f.states, f.memories);
+  for (const deadline of [0, 1, 2, 3, 4, 5, 8, 10, 20, 40]) {
+    assert.equal(session.run(f, deadline), reference.run(deadline));
+    assert.deepEqual(f.states, reference.states);
+    assert.deepEqual(f.memories, reference.memories);
+    assert.equal(f.time, reference.time);
+  }
+  assert(f.states[1] >= 5);
+  assert.equal(f.states[0], 0);
+});
+
+test('session overlap replacement swaps routes without retargeting suspended continuations', () => {
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  const oldBody = builder();
+  oldBody.write('x', oldBody.constant(1));
+  oldBody.delay(5);
+  oldBody.write('marker', oldBody.constant(11));
+  const tail = builder();
+  tail.delay(1);
+  session.add([oldBody.instruction(0, 2), tail.instruction(2, 4)]);
+
+  const f = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(f, 2), 'deadline');
+  const oldResume = f.resume;
+  assert.notEqual(oldResume, 0);
+
+  const replacement = builder();
+  replacement.write('x', replacement.constant(9));
+  replacement.delay(7);
+  replacement.write('marker', replacement.constant(33));
+  session.add([replacement.instruction(0, 4)]);
+  assert.equal(session.stats().invalidatedBlocks, 1);
+  assert.equal(session.routeCount, 2);
+  assert.deepEqual(session.pcs, [0, 2]);
+
+  // The suspended frame finishes the old body even though PC 0 now routes elsewhere.
+  f.stopAfterInstruction = true;
+  assert.equal(session.run(f, 5), 'deadline', 'deadline equality leaves the suffix pending');
+  assert.equal(session.run(f, 6), 'invalidated');
+  assert.equal(f.states[5], 11, 'the old suffix, not the replacement suffix, completed');
+  assert.equal(f.states[1], 1);
+  assert.equal(f.states[0], 2);
+  assert.equal(f.resume, 0);
+
+  const fresh = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(fresh, 2), 'deadline');
+  assert.equal(fresh.states[1], 9);
+  assert.equal(fresh.states[0], 4, 'the new nextPc is routed');
+  assert.notEqual(fresh.resume, oldResume, 'a recompiled body gets a fresh continuation id');
+});
+
+test('session commits follow first-PC, non-finite deletion, rejection, remove and clear', () => {
+  const session = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  const first = directBlock(0, 99, 1);
+  const duplicate = directBlock(0, 4, 2);
+  const supported = directBlock(2, 0, 3);
+  const unsupported = builder();
+  unsupported.write('marker', unsupported.constant(7));
+  unsupported.value({ kind: 'random' });
+  unsupported.delay(1);
+  session.add([first, duplicate, supported, unsupported.instruction(4, 6)]);
+  assert.equal(session.routeCount, 2);
+  assert.deepEqual(session.pcs, [0, 2]);
+  assert.equal(session.has(4), false, 'a rejected body owns no route');
+
+  const f = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(f, 2), 'untranslated');
+  assert.equal(f.states[1], 1, 'the first duplicate owns the PC');
+  assert.equal(f.states[5], 0);
+  const rejected = frame(session, [4, 0, 0, true, 0, 0]);
+  assert.equal(session.run(rejected, 2), 'fallback');
+  assert.deepEqual(rejected.states, [4, 0, 0, true, 0, 0]);
+  const unknown = frame(session, [999, 0, 0, true, 0, 0]);
+  assert.equal(session.run(unknown, 2), 'untranslated');
+
+  // A non-finite nextPc deletes the PC; a later duplicate in the same batch stays ignored.
+  session.add([{ pc: 0, nextPc: Infinity, body: first.body }, duplicate]);
+  assert.equal(session.has(0), false);
+  assert.equal(session.routeCount, 1);
+  assert.deepEqual(session.pcs, [2]);
+  assert.equal(session.run(frame(session, [0, 0, 0, true, 0, 0]), 2), 'untranslated');
+
+  session.add([directBlock(0, 2, 5)]);
+  assert.equal(session.has(0), true);
+  assert.equal(session.routeCount, 2);
+  session.remove([0, 0, NaN, 2]);
+  assert.equal(session.has(0), false);
+  assert.equal(session.routeCount, 0);
+  assert.deepEqual(session.pcs, []);
+  assert.equal(session.stats().routeRemovals >= 2, true);
+
+  session.clear();
+  assert.equal(session.has(4), false);
+  assert.equal(session.routeCount, 0);
+  assert.equal(session.shardCount, 0);
+  assert.deepEqual(session.pcs, []);
+  assert.equal(session.stats().routes, 0);
+  assert.equal(session.stats().shards, 0);
+  assert.equal(session.run(frame(session, [0, 0, 0, true, 0, 0]), 2), 'untranslated');
+});
+
+test('session reasons and continuation rules match the resident program', () => {
+  const instructions = scalarLoop();
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  session.add(instructions);
+  const resident = compileDirectJit(
+    instructions,
+    { ...binding, split: true, shardSlotLimit: 0, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  assert(resident);
+  const f = frame(session);
+  const residentFrame = frame(resident);
+  const reference = generic(instructions, f.states, f.memories);
+  for (const deadline of [0, 1, 2, 3, 5, 8, 13, 21, 39, 100]) {
+    const expected = reference.run(deadline);
+    assert.equal(session.run(f, deadline), expected, `session deadline ${deadline}`);
+    assert.equal(resident.run(residentFrame, deadline), expected, `resident deadline ${deadline}`);
+    assert.deepEqual(f.states, reference.states, `deadline ${deadline}`);
+    assert.deepEqual(f.memories, reference.memories, `deadline ${deadline}`);
+    assert.equal(f.time, reference.time, `deadline ${deadline}`);
+    assert.deepEqual(residentFrame.states, reference.states, `resident states ${deadline}`);
+    assert.equal(residentFrame.time, reference.time, `resident time ${deadline}`);
+  }
+  const idle = frame(session);
+  idle.stopAfterInstruction = true;
+  assert.equal(session.run(idle, 10), 'invalidated');
+  const invalid = frame(session);
+  invalid.resume = 9999;
+  assert.throws(() => session.run(invalid, 10), /Unknown direct JIT continuation/);
+  const expired = frame(session);
+  expired.time = 10;
+  assert.equal(session.run(expired, 10), 'deadline');
+});
+
+test('session resume fence isolates a looping entry reached by a continuation', () => {
+  const delayed = builder();
+  delayed.write('x', delayed.constant(1));
+  delayed.delay(5);
+  const looping = builder();
+  const no = looping.constant(false);
+  looping.operations.push({
+    kind: 'while',
+    test: { body: { operations: [{ kind: 'yield', value: no }] } },
+    body: { operations: [] },
+  });
+  looping.write('y', looping.constant(1));
+  looping.delay(0);
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  session.add([delayed.instruction(0, 2), looping.instruction(2, 4)]);
+  const f = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(f, 2), 'deadline');
+  assert.equal(session.run(f, 5), 'deadline');
+  assert.equal(session.run(f, 6), 'invalidated');
+  assert.equal(f.states[0], 2);
+  assert.equal(f.states[2], 0, 'the continuation fence blocks the looping entry');
+  assert.equal(f.resume, 0);
+  f.stateDirty.fill(0);
+  assert.equal(session.run(f, 7), 'invalidated', 'the isolated entry publishes after running');
+  assert.equal(f.states[0], 4);
+  assert.equal(f.states[2], 1);
+});
+
+test('session updateDelays recompiles only entries whose delay snapshot changed', () => {
+  const settings = {
+    ...binding,
+    shardSize: 1,
+    delayLoops: new Map([[0, { counter: 1, cycles: 10 }]]),
+  };
+  const session = compileDirectJit.createSession(settings, compileDirectJit.createCache());
+  session.add([directBlock(0, 2, 1), directBlock(2, 0, 2)]);
+  const before = session.stats();
+
+  const sources = captureFactories(() =>
+    session.updateDelays(new Map([[0, { counter: 1, cycles: 20 }]])),
+  );
+  assert.equal(sources.length, 1);
+  assert.match(
+    sources[0],
+    /let rounds = Math\.min\(S\[\d+\] - 1, Math\.floor\(\(deadline - F\.time\) \/ 20\)\)/,
+  );
+  const changed = session.stats();
+  assert.equal(changed.compiledBlocks, before.compiledBlocks + 1);
+  assert.equal(changed.invalidatedBlocks, before.invalidatedBlocks + 1);
+  assert.equal(changed.compiledShards, before.compiledShards + 1);
+  assert.equal(changed.routes, 2);
+
+  const restored = captureFactories(() => session.updateDelays());
+  assert.equal(restored.length, 1, 'omitting the map restores binding.delayLoops');
+  assert.match(restored[0], /\/ 10\)/);
+  assert.equal(session.stats().compiledBlocks, before.compiledBlocks + 2);
+  const f = frame(session, [0, 3, 0, false, 0, 0]);
+  assert.equal(session.run(f, 100), 'deadline');
+  assert.equal(f.time, 100);
+  assert.equal(f.states[1], 2, 'the restored guard still folds and reaches the loop tail');
+});
+
+test('session localCount only grows and frame.locals can be expanded later', () => {
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 4 },
+    compileDirectJit.createCache(),
+  );
+  session.add([directBlock(0, 0, 5)]);
+  const before = session.localCount;
+  const chain = builder();
+  let value = chain.read('y');
+  for (let step = 0; step < 20; step++) value = chain.binary('add', value, chain.constant(1));
+  chain.write('marker', value);
+  chain.delay(1);
+  session.add([chain.instruction(2, 0)]);
+  const grown = session.localCount;
+  assert(grown > before);
+
+  const first = frame(session, [0, 0, 3, true, 0, 0]);
+  assert.equal(session.localCount, grown);
+  assert.equal(session.run(first, 2), 'deadline');
+  assert.equal(first.states[1], 5);
+  const second = frame(session, [2, 0, 3, true, 0, 0]);
+  assert.equal(session.run(second, 2), 'deadline');
+  assert.equal(second.states[5], 23);
+  const oldAgain = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(oldAgain, 2), 'deadline');
+  assert.equal(oldAgain.states[1], 5);
+  session.clear();
+  assert.equal(session.localCount, grown, 'clear never shrinks the locals contract');
+});
+
+test('createSession shares legacy cache stats without breaking program snapshots', () => {
+  const cache = compileDirectJit.createCache();
+  const first = directBlock(0, 0, 1);
+  const initial = compileDirectJit([first], { ...binding, split: true, shardSize: 2 }, cache);
+  assert(initial);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 1,
+    reusedBlocks: 0,
+    invalidatedBlocks: 0,
+    compiledShards: 1,
+    reusedShards: 0,
+    entries: 1,
+    clears: 0,
+  });
+
+  const session = compileDirectJit.createSession({ ...binding, shardSize: 2 }, cache);
+  assert.equal(compileDirectJit.createSession({ ...binding, shardSize: 2 }, cache), session);
+  assert.deepEqual(session.pcs, [0]);
+  assert.equal(session.routeCount, 1);
+  session.add([directBlock(2, 0, 2)]);
+  assert.deepEqual(session.pcs, [0, 2]);
+  assert.equal(compileDirectJit.cacheStats(cache).entries, 2);
+
+  const replaced = compileDirectJit(
+    [directBlock(0, 2, 9), directBlock(2, 0, 8)],
+    { ...binding, split: true, shardSize: 2 },
+    cache,
+  );
+  assert(replaced);
+  assert.throws(() => session.add([]), /disposed/);
+  const old = frame(initial, [0, 0, 0, true, 0, 0]);
+  assert.equal(initial.run(old, 2), 'deadline');
+  assert.equal(old.states[1], 1, 'the earlier program keeps its own snapshot');
+  const next = frame(replaced, [0, 0, 0, true, 0, 0]);
+  assert.equal(replaced.run(next, 2), 'deadline');
+  assert.equal(next.states[1], 8, 'the replacement program reached its second block');
+
+  const reopened = compileDirectJit.createSession({ ...binding, shardSize: 2 }, cache);
+  assert.notEqual(reopened, session);
+  assert.deepEqual(reopened.pcs, [0, 2]);
+  compileDirectJit.clearCache(cache);
+  assert.throws(() => reopened.add([]), /disposed/);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 4,
+    reusedBlocks: 0,
+    invalidatedBlocks: 2,
+    compiledShards: 3,
+    reusedShards: 2,
+    entries: 0,
+    clears: 1,
+  });
+});
+
+/** Physical identity helper for the #308 compiler-side body-sharing tests. */
+function shareKey(overrides = {}) {
+  return { storage: 'flash', codeVersion: 3, offset: 0x40, byteLength: 2, ...overrides };
+}
+
+/** Mark an instruction without changing its builder shape. */
+function withShare(instruction, share) {
+  return { ...instruction, share };
+}
+
+/** Register increment loop used to compare two equivalent logical windows. */
+function sharedIncrement(pc, nextPc, share) {
+  const b = builder();
+  const x = b.read('x');
+  b.write('x', b.binary('add', x, b.constant(1)));
+  b.delay(1);
+  return withShare(b.instruction(pc, nextPc), share);
+}
+
+test('equivalent share candidates emit one body and keep their own nextPc routes', () => {
+  const share = shareKey();
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  const sources = captureFactories(() =>
+    session.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]),
+  );
+  assert.equal(
+    sources.filter((source) => /function stepShared\d+/.test(source)).length,
+    1,
+    'one shared step/resume factory',
+  );
+  assert.equal(session.shardCount, 0, 'both entries left the independent shard set');
+
+  const stats = session.stats();
+  assert.equal(stats.shareCandidates, 2);
+  assert.equal(stats.shareGroups, 1);
+  assert.equal(stats.sharedRoutes, 2);
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.shareReusedBodies, 1, 'the second route reuses the emitted body');
+  assert(stats.shareReusedRoutes >= 2);
+  assert(stats.sharedBytes > 0);
+  assert.equal(stats.shardBytes, 0);
+  assert.equal(stats.shareRejected.ir + stats.shareRejected.delay, 0);
+
+  const independent = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  independent.add([sharedIncrement(0, 0), sharedIncrement(2, 2)]);
+  for (const pc of [0, 2]) {
+    const sharedFrame = frame(session, [pc, 0, 0, true, 0, 0]);
+    const plainFrame = frame(independent, [pc, 0, 0, true, 0, 0]);
+    for (const deadline of [1, 3, 7]) {
+      assert.equal(session.run(sharedFrame, deadline), 'deadline');
+      assert.equal(independent.run(plainFrame, deadline), 'deadline');
+      assert.deepEqual(sharedFrame.states, plainFrame.states, `pc ${pc} deadline ${deadline}`);
+      assert.equal(sharedFrame.time, plainFrame.time, `pc ${pc} deadline ${deadline}`);
+    }
+    assert.equal(sharedFrame.states[0], pc);
+  }
+});
+
+test('structural IR, delay and key differences never join a shared body', () => {
+  const share = shareKey();
+
+  const plain = compileDirectJit.createSession(
+    { ...binding, shardSize: 2 },
+    compileDirectJit.createCache(),
+  );
+  const first = sharedIncrement(0, 0, share);
+  const other = builder();
+  other.write('y', other.constant(9));
+  other.delay(1);
+  plain.add([first, withShare(other.instruction(2, 2), share)]);
+  let stats = plain.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedBodies, 0);
+  assert.equal(stats.routes, 2);
+  assert(stats.shareRejected.ir >= 1, 'same delay and key, different IR');
+
+  const redirectShare = shareKey({ offset: 0x44 });
+  const redirect = (pc, target) => {
+    const b = builder();
+    const destination = b.constant(target);
+    const delay = b.constant(1);
+    b.operations.push({ kind: 'redirect', target: destination, delay });
+    return withShare(b.instruction(pc, 0), redirectShare);
+  };
+  const redirected = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  redirected.add([redirect(0, 100), redirect(2, 200)]);
+  stats = redirected.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert(stats.shareRejected.ir >= 1, 'PC-relative redirect targets differ');
+
+  const delayedBinding = {
+    ...binding,
+    delayLoops: new Map([[0, { counter: 1, cycles: 10 }]]),
+  };
+  const delayed = compileDirectJit.createSession(delayedBinding, compileDirectJit.createCache());
+  delayed.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]);
+  stats = delayed.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert(stats.shareRejected.delay >= 1, 'delay fingerprints differ');
+
+  for (const [left, right] of [
+    [shareKey({ storage: 'flash-a' }), shareKey({ storage: 'flash-b' })],
+    [shareKey({ codeVersion: 4 }), shareKey({ codeVersion: 5 })],
+    [shareKey({ offset: 0x40 }), shareKey({ offset: 0x80 })],
+    [shareKey({ byteLength: 2 }), shareKey({ byteLength: 4 })],
+  ]) {
+    const session = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+    session.add([sharedIncrement(0, 0, left), sharedIncrement(2, 2, right)]);
+    stats = session.stats();
+    assert.equal(stats.shareGroups, 0);
+    assert.equal(stats.sharedBodies, 0);
+    assert.equal(stats.shareCandidates, 2);
+    assert.equal(stats.shareRejected.single, 2, 'each physical identity has one candidate');
+    assert.equal(stats.shareRejected.context, 0);
+  }
+});
+
+test('single, invalid, isolated and missing markers stay on independent routes', () => {
+  const share = shareKey({ offset: 0x50 });
+  const single = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  single.add([sharedIncrement(0, 0, share)]);
+  let stats = single.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedBodies, 0);
+  assert.equal(stats.shareRejected.single, 1);
+  assert.equal(single.routeCount, 1);
+
+  const invalid = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  invalid.add([sharedIncrement(0, 0, shareKey({ offset: -1 }))]);
+  stats = invalid.stats();
+  assert.equal(stats.shareCandidates, 0);
+  assert.equal(stats.shareRejected.invalid, 1);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(invalid.routeCount, 1);
+
+  const unsupported = builder();
+  unsupported.write('marker', unsupported.constant(7));
+  unsupported.value({ kind: 'random' });
+  unsupported.delay(1);
+  const context = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  context.add([withShare(unsupported.instruction(0, 0), shareKey({ offset: 0x52 }))]);
+  stats = context.stats();
+  assert.equal(stats.shareCandidates, 1);
+  assert.equal(stats.shareRejected.context, 1);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(context.routeCount, 0);
+
+  const looping = (pc) => {
+    const b = builder();
+    const no = b.constant(false);
+    b.operations.push({
+      kind: 'while',
+      test: { body: { operations: [{ kind: 'yield', value: no }] } },
+      body: { operations: [] },
+    });
+    b.write('y', b.constant(1));
+    b.delay(0);
+    return withShare(b.instruction(pc, pc), shareKey({ offset: 0x54 }));
+  };
+  const isolated = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  isolated.add([looping(0), looping(2)]);
+  stats = isolated.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedBodies, 0);
+  assert(stats.shareRejected.isolated >= 1);
+
+  const missing = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  missing.add([sharedIncrement(0, 0, shareKey({ offset: 0x58 }))]);
+  missing.add([sharedIncrement(0, 0)]);
+  stats = missing.stats();
+  assert.equal(stats.shareCandidates, 0);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.shareRejected.missing, 1);
+  assert.equal(missing.routeCount, 1);
+});
+
+test('a shared elapse resumes through each route and completes the suffix once', () => {
+  const share = shareKey({ offset: 0x60 });
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 4 },
+    compileDirectJit.createCache(),
+  );
+  const suspending = (pc, nextPc) => {
+    const b = builder();
+    b.write('x', b.constant(1));
+    b.delay(5);
+    b.write('marker', b.constant(7));
+    return withShare(b.instruction(pc, nextPc), share);
+  };
+  const tail = (pc, value) => {
+    const b = builder();
+    b.write('y', b.constant(value));
+    b.operations.push({ kind: 'stop' });
+    return b.instruction(pc, 0);
+  };
+  session.add([suspending(0, 10), suspending(2, 12), tail(10, 100), tail(12, 200)]);
+  let stats = session.stats();
+  assert.equal(stats.shareGroups, 1);
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.sharedRoutes, 2);
+
+  for (const [pc, tailValue] of [
+    [0, 100],
+    [2, 200],
+  ]) {
+    const f = frame(session, [pc, 0, 0, true, 0, 0]);
+    assert.equal(session.run(f, 2), 'deadline');
+    assert.notEqual(f.resume, 0);
+    assert.equal(f.states[0], pc === 0 ? 10 : 12);
+    assert.equal(f.states[1], 1);
+    assert.equal(f.states[5], 0, 'suffix has not run yet');
+    assert.equal(session.run(f, 6), 'stopped');
+    assert.equal(f.states[5], 7, 'the suffix completed exactly once');
+    assert.equal(f.states[2], tailValue, 'the actual route nextPc selected the tail');
+    assert.equal(f.resume, 0);
+    assert.equal(f.time, 5);
+    assert.equal(session.run(f, 5), 'deadline', 'no time advances before another instruction');
+    assert.equal(f.states[5], 7);
+  }
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 1, 'both logical routes used one resume function');
+});
+
+test('replacing a shared entry retires only its route and preserves old continuations', () => {
+  const share = shareKey({ offset: 0x70 });
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  const suspending = (pc) => {
+    const b = builder();
+    b.write('x', b.constant(1));
+    b.delay(5);
+    b.write('marker', b.constant(7));
+    return withShare(b.instruction(pc, pc), share);
+  };
+  session.add([suspending(0), suspending(2)]);
+  assert.equal(session.stats().sharedBodies, 1);
+
+  const f = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(f, 2), 'deadline');
+  const oldResume = f.resume;
+  assert.notEqual(oldResume, 0);
+
+  const replacement = builder();
+  replacement.write('y', replacement.constant(9));
+  replacement.delay(1);
+  session.add([withShare(replacement.instruction(0, 0), share)]);
+  let stats = session.stats();
+  assert.equal(stats.sharedBodies, 1, 'replacement did not emit another equivalent body');
+  assert.equal(stats.sharedRoutes, 1, 'the unchanged peer still uses the shared body');
+  assert.equal(stats.shareGroups, 1, 'retained shared body with one route');
+  assert.equal(stats.routes, 2);
+  assert(stats.shareRejected.ir >= 1);
+
+  // The suspended frame keeps its old resume function and suffix.
+  f.stopAfterInstruction = true;
+  assert.equal(session.run(f, 6), 'invalidated');
+  assert.equal(f.states[5], 7, 'old shared suffix completed once');
+  assert.equal(f.states[2], 0, 'replacement body did not start');
+  assert.equal(f.resume, 0);
+
+  const fresh = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(fresh, 2), 'deadline');
+  assert.equal(fresh.states[2], 9, 'fresh PC 0 uses the independent replacement route');
+  assert.equal(fresh.states[1], 0);
+
+  const peer = frame(session, [2, 0, 0, true, 0, 0]);
+  assert.equal(session.run(peer, 6), 'deadline');
+  assert.equal(peer.states[1], 1, 'the peer route still shares the original body');
+  assert.equal(peer.states[5], 7);
+
+  // Restoring an equivalent body joins the retained shared body without re-emitting it.
+  session.add([suspending(0)]);
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.sharedRoutes, 2);
+  assert.equal(stats.shareGroups, 1);
+  const restored = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(restored, 6), 'deadline');
+  assert.equal(restored.states[1], 1);
+  assert.equal(restored.states[5], 7);
+});
+
+test('remove, clear and updateDelays reconcile shared groups, routes and counters', () => {
+  const share = shareKey({ offset: 0x80 });
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  session.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]);
+  let stats = session.stats();
+  const bodies = stats.sharedBodies;
+  const reused = stats.shareReusedBodies;
+  assert.equal(bodies, 1);
+
+  session.remove([0]);
+  stats = session.stats();
+  assert.equal(stats.shareCandidates, 1);
+  assert.equal(stats.shareGroups, 1, 'a retained shared body may serve one route');
+  assert.equal(stats.sharedRoutes, 1);
+  assert.equal(stats.routes, 1);
+  assert.equal(stats.sharedBodies, bodies);
+  const remaining = frame(session, [2, 0, 0, true, 0, 0]);
+  assert.equal(session.run(remaining, 2), 'deadline');
+  assert.equal(remaining.states[1], 2);
+
+  session.remove([2]);
+  stats = session.stats();
+  assert.equal(stats.shareCandidates, 0);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedRoutes, 0);
+  assert.equal(stats.routes, 0);
+  assert.equal(stats.shards, 0);
+  assert.equal(stats.sharedBodies, bodies);
+
+  // Re-adding the same equivalence class reuses the archived shared function.
+  session.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]);
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, bodies, 'no duplicate equivalent body');
+  assert(stats.shareReusedBodies > reused);
+  assert.equal(stats.sharedRoutes, 2);
+
+  session.clear();
+  stats = session.stats();
+  assert.equal(stats.shareCandidates, 0);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedRoutes, 0);
+  assert.equal(stats.routes, 0);
+  assert.equal(stats.sharedBodies, bodies, 'byte/body counters stay cumulative');
+
+  const delayed = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  delayed.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]);
+  const before = delayed.stats();
+  delayed.updateDelays(new Map([[0, { counter: 1, cycles: 10 }]]));
+  stats = delayed.stats();
+  assert.equal(stats.routes, 2);
+  assert.equal(stats.sharedRoutes, 1, 'the changed-delay entry left the shared body');
+  assert.equal(stats.shareGroups, 1);
+  assert.equal(stats.shards, 1);
+  assert.equal(stats.sharedBodies, before.sharedBodies);
+  assert(stats.shareRejected.delay >= 1);
+
+  delayed.updateDelays();
+  stats = delayed.stats();
+  assert.equal(stats.sharedRoutes, 2);
+  assert.equal(stats.shareGroups, 1);
+  assert.equal(stats.shards, 0);
+  assert.equal(stats.sharedBodies, before.sharedBodies, 'restoring the delay reuses the body');
+  assert(stats.shareReusedBodies > before.shareReusedBodies);
+});
+
+test('a third equivalent route reuses the body and adds only its own route', () => {
+  const share = shareKey({ offset: 0x90 });
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  // A distinct literal keeps the emitted source unique even if the factory cache is warm.
+  const unique = (pc) => {
+    const b = builder();
+    b.write('x', b.constant(12345));
+    b.delay(1);
+    return withShare(b.instruction(pc, pc), share);
+  };
+  const firstSources = captureFactories(() => session.add([unique(0), unique(2)]));
+  assert.equal(firstSources.filter((source) => /function stepShared\d+/.test(source)).length, 1);
+  let stats = session.stats();
+  assert.equal(stats.sharedBodies, 1);
+  const reused = stats.shareReusedBodies;
+
+  const laterSources = captureFactories(() => session.add([unique(4)]));
+  assert.equal(
+    laterSources.filter((source) => /function stepShared\d+/.test(source)).length,
+    0,
+    'no new shared body for an equivalent third route',
+  );
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.sharedRoutes, 3);
+  assert.equal(stats.shareReusedBodies, reused + 1);
+  assert(stats.sharedBytes > 0);
+  assert(stats.shardBytes === 0);
+});
+
+test('session emitStats aggregates valid bodies after commits and not during run', () => {
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  assert.equal(session.emitStats.blocks, 0);
+  assert.equal(session.emitStats.worst, null);
+
+  const share = shareKey({ offset: 0x94 });
+  const first = sharedIncrement(0, 0, share);
+  const second = sharedIncrement(2, 2, share);
+  const plain = directBlock(4, 4, 10);
+  const reference = compileDirectJit([first, second, plain], binding);
+  assert(reference);
+  session.add([first, second, plain]);
+  const expected = reference.emitStats;
+  let stats = session.emitStats;
+  assert.equal(stats.blocks, 3, 'shared entries still contribute their bodies');
+  assert.equal(stats.operations, expected.operations);
+  assert.equal(stats.nestedOperations, expected.nestedOperations);
+  assert.equal(stats.statements, expected.statements);
+  assert.equal(stats.worst?.pc, expected.worst?.pc);
+
+  const f = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(f, 2), 'deadline');
+  assert.equal(session.emitStats, stats, 'run reuses the last commit snapshot');
+
+  const unsupported = builder();
+  unsupported.write('marker', unsupported.constant(7));
+  unsupported.value({ kind: 'random' });
+  unsupported.delay(1);
+  session.add([unsupported.instruction(6, 0)]);
+  stats = session.emitStats;
+  assert.equal(stats.blocks, 3, 'a rejected body has no instruction to aggregate');
+  assert.equal(stats.operations, expected.operations);
+
+  session.remove([2]);
+  stats = session.emitStats;
+  assert.equal(stats.blocks, 2);
+  assert(stats.operations < expected.operations);
+
+  session.updateDelays(new Map([[0, { counter: 1, cycles: 20 }]]));
+  assert.equal(session.emitStats.blocks, 2);
+
+  session.clear();
+  assert.equal(session.emitStats.blocks, 0);
+  assert.equal(session.emitStats.worst, null);
+});
+
+test('incremental sharing leaves unrelated physical groups untouched', () => {
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  const keyA = shareKey({ offset: 0xa0 });
+  const keyB = shareKey({ offset: 0xa2 });
+  const block = (pc, state, value, share) => {
+    const b = builder();
+    b.write(state, b.constant(value));
+    b.delay(1);
+    return withShare(b.instruction(pc, pc), share);
+  };
+
+  const firstSources = captureFactories(() =>
+    session.add([block(0, 'x', 11, keyA), block(2, 'x', 11, keyA), block(4, 'y', 22, keyB)]),
+  );
+  const sharedSources = firstSources.filter((source) => /function stepShared\d+/.test(source));
+  assert.equal(sharedSources.length, 1, 'only the complete A group emits a body');
+  const groupA = /function (stepShared\d+)/.exec(sharedSources[0])[1];
+  let stats = session.stats();
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.sharedRoutes, 2);
+  assert.equal(stats.shards, 1);
+  assert.equal(stats.shareRejected.single, 1, 'the lone B candidate is still single');
+
+  const secondSources = captureFactories(() => session.add([block(6, 'y', 22, keyB)]));
+  const newSharedSources = secondSources.filter((source) => /function stepShared\d+/.test(source));
+  assert.equal(newSharedSources.length, 1, 'only B emits a newly completed body');
+  const groupB = /function (stepShared\d+)/.exec(newSharedSources[0])[1];
+  assert.notEqual(groupB, groupA, 'group A was not re-emitted');
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 2);
+  assert.equal(stats.sharedRoutes, 4);
+  assert.equal(stats.shards, 0);
+  assert.equal(stats.shareGroups, 2);
+
+  const thirdSources = captureFactories(() => session.add([block(8, 'x', 11, keyA)]));
+  assert.equal(
+    thirdSources.filter((source) => /function stepShared\d+/.test(source)).length,
+    0,
+    'a later A route reuses both existing shared groups',
+  );
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 2);
+  assert.equal(stats.sharedRoutes, 5);
+  assert.equal(stats.shareGroups, 2);
+  assert.equal(stats.shareRejected.single, 1, 'unaffected rejection history stays intact');
+
+  const a = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(a, 1), 'deadline');
+  assert.equal(a.states[1], 11);
+  const b = frame(session, [6, 0, 0, true, 0, 0]);
+  assert.equal(session.run(b, 1), 'deadline');
+  assert.equal(b.states[2], 22);
+});

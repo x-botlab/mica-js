@@ -1,4 +1,10 @@
-import type { DeclarationIR, InputPath, OperationIR, SourceInfo } from '@mica-js/device-model';
+import type {
+  DeclarationIR,
+  InputPath,
+  OperationIR,
+  RegionIR,
+  SourceInfo,
+} from '@mica-js/device-model';
 
 export type ExecutionSignal =
   | { readonly kind: 'ticks' | 'elapse'; readonly duration: number }
@@ -262,6 +268,174 @@ export interface DirectJitProgram {
   readonly writeStates: readonly string[];
   readonly readMemories: readonly string[];
   readonly writeMemories: readonly string[];
+}
+
+/**
+ * Development-only code shape: how many host statements one IR operation costs. The full
+ * program exposes the latest build's value, and an incremental session exposes the union of
+ * its currently valid instruction bodies.
+ */
+export interface DirectJitEmitStats {
+  readonly blocks: number;
+  /** Top-level IR operations, the denominator #256 quotes for one instruction block. */
+  readonly operations: number;
+  /** IR operations including nested value and statement regions. */
+  readonly nestedOperations: number;
+  readonly statements: number;
+  readonly statementsPerOperation: number;
+  readonly statementsPerNestedOperation: number;
+  /** Operations that cost no statement because they folded; adds back the pre-folding count. */
+  readonly foldedOperations: number;
+  readonly selectBlocks: number;
+  /** Worst block by statements per operation; `null` for an empty program. */
+  readonly worst: {
+    readonly pc: number;
+    readonly operations: number;
+    readonly statements: number;
+    readonly statementsPerOperation: number;
+    readonly foldedOperations: number;
+    readonly selectBlocks: number;
+  } | null;
+}
+
+/**
+ * Physical identity of one translated instruction body. Two logical PCs may name the same
+ * bytes of one storage generation; they are only considered for sharing when every field
+ * matches.
+ */
+export interface DirectJitShareCandidate {
+  /** Storage identity, for example the memory name. */
+  readonly storage: string;
+  /** Code version used for the translation. */
+  readonly codeVersion: number;
+  /** Physical offset of this entry in the borrowed view. */
+  readonly offset: number;
+  /** Actual bytes fetched consecutively from this entry. */
+  readonly byteLength: number;
+}
+
+/**
+ * One translated instruction submitted to an incremental direct JIT session.
+ *
+ * The entry is committed atomically with the rest of its `add` batch. The body stays opaque
+ * so a later revision can attach sharing metadata without changing this contract.
+ */
+export interface DirectJitInstruction {
+  readonly pc: number;
+  readonly nextPc: number;
+  readonly body: RegionIR;
+  /** Explicit opt-in to function-body sharing; unmarked entries always stay independent. */
+  readonly share?: DirectJitShareCandidate;
+}
+
+/**
+ * A direct execution result. `untranslated` asks the caller to translate the current PC and
+ * call `add`; `pending` is reserved for a future asynchronous translation path and is not
+ * returned by the synchronous session today.
+ */
+export type DirectJitRunResult = DirectJitReason | 'untranslated' | 'pending';
+
+/**
+ * Why a marked entry did not join an equivalent shared body. Counters are cumulative and
+ * only advance when an entry's classification changes, so an unchanged commit adds nothing.
+ */
+export interface DirectJitShareRejectedStats {
+  /** No marker, or a previously marked PC was replaced by an unmarked entry. */
+  readonly missing: number;
+  /** The marker was present but not a valid storage/version/offset/byteLength tuple. */
+  readonly invalid: number;
+  /** The entry is the only candidate for its physical identity or equivalence partition. */
+  readonly single: number;
+  /** A same-key candidate has the same delay but a different validated IR. */
+  readonly ir: number;
+  /** A same-key candidate has different IR and delay, or a different delay fingerprint. */
+  readonly delay: number;
+  /** Loop-publishing entries never share in this revision. */
+  readonly isolated: number;
+  /** The body could not be emitted in this session's compilation context. */
+  readonly context: number;
+}
+
+/** Deterministic per-session counters; no value depends on wall-clock time. */
+export interface DirectJitSessionStats {
+  /** Completed `add` calls, including batches that only reused cached instructions. */
+  readonly batches: number;
+  /** Route entries written after an instruction body or shard function changed. */
+  readonly routeInstalls: number;
+  /** Route entries deleted because their PC was removed or rejected. */
+  readonly routeRemovals: number;
+  /** Shard functions emitted by this session. */
+  readonly compiledShards: number;
+  /** Existing shard functions retained across a session commit. */
+  readonly reusedShards: number;
+  /** Instruction bodies emitted by this session. */
+  readonly compiledBlocks: number;
+  /** Instruction bodies reused from the cache by this session. */
+  readonly reusedBlocks: number;
+  /** Cached instruction records replaced or deleted by this session. */
+  readonly invalidatedBlocks: number;
+  /** Currently dispatchable PCs. */
+  readonly routes: number;
+  /** Currently resident shard functions. */
+  readonly shards: number;
+  /** Cumulative generated source characters of emitted instruction bodies. */
+  readonly bodyBytes: number;
+  /** Cumulative generated source characters of emitted shard functions. */
+  readonly shardBytes: number;
+  /** Generated source characters of the one fixed dispatcher. */
+  readonly dispatcherBytes: number;
+  /** Cumulative generated source characters of separately compiled synchronous helpers. */
+  readonly helperBytes: number;
+  /** Valid share candidates currently owned by the session. */
+  readonly shareCandidates: number;
+  /** Equivalence groups currently backed by a shared body, including retained single routes. */
+  readonly shareGroups: number;
+  /** Current routes that point at a shared body. */
+  readonly sharedRoutes: number;
+  /** Entry attachments that reused an already emitted shared body instead of emitting one. */
+  readonly shareReusedBodies: number;
+  /** Shared-body route installs, including migrations from independent shard routes. */
+  readonly shareReusedRoutes: number;
+  /** Cumulative rejection reasons for marked entries. */
+  readonly shareRejected: DirectJitShareRejectedStats;
+  /** Shared step/resume factories emitted by this session. */
+  readonly sharedBodies: number;
+  /** Cumulative generated source characters of emitted shared bodies. */
+  readonly sharedBytes: number;
+}
+
+/**
+ * Incremental resident direct compiler for one JIT registration.
+ *
+ * The binding is fixed for the lifetime of the session. `add` commits translation batches,
+ * `remove` drops entries, and `updateDelays` reconciles busy-wait descriptions. The dispatch
+ * function is emitted once; later commits only install routes to new or rebuilt shards.
+ */
+export interface DirectJitSession {
+  run(frame: DirectJitFrame, deadline: number): DirectJitRunResult;
+  add(instructions: readonly DirectJitInstruction[]): void;
+  remove(pcs: readonly number[]): void;
+  updateDelays(delays?: ReadonlyMap<number, DirectJitDelay>): void;
+  clear(): void;
+  /** Whether a compiled route currently dispatches the PC. Rejected bodies report false. */
+  has(pc: number): boolean;
+  /**
+   * Locals required by every instruction ever compiled by this session. Only grows, so a
+   * runtime can expand `frame.locals` in place when a later batch needs more slots.
+   */
+  readonly localCount: number;
+  readonly shardCount: number;
+  readonly routeCount: number;
+  /** Sorted PCs the session can dispatch; bodies the direct emitter declined are excluded. */
+  readonly pcs: readonly number[];
+  /**
+   * Development-only code shape over every currently valid instruction body. Updated by
+   * session commits (`add`/`remove`/`updateDelays`/`clear`), never during `run`.
+   */
+  readonly emitStats: DirectJitEmitStats;
+  stats(): DirectJitSessionStats;
+  /** Detach from the cache. Other programs/sessions keep their own compiled snapshots. */
+  dispose(): void;
 }
 
 /** Generated line and column are one-based, relative to Artifact.source. */
