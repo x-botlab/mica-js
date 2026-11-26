@@ -675,6 +675,110 @@ describe('process batch execution', () => {
     expect(parked.cursor).toBe(32);
   });
 
+  it('folds a registered on-process driven by input and preserves coalesced activation', () => {
+    interface OnResult {
+      readonly outputs: readonly Collected[];
+      readonly runs: unknown;
+      readonly cursor: unknown;
+      readonly batches: number;
+      readonly pushes: number;
+      readonly pops: number;
+    }
+    function onProcess(batch: boolean): OnResult {
+      const id = `ProcessBatchOn${serial++}`;
+      const builder = createDeviceBuilder({ name: id });
+      const outputs: Collected[] = [];
+      builder.memory({ name: 'dst', length: 16 });
+      builder.state({ name: 'cursor', type: types.number, initial: 0 });
+      builder.state({ name: 'signal', type: types.number, initial: 0 });
+      builder.state({ name: 'runs', type: types.number, initial: 0 });
+      builder.channel({ name: 'control', direction: 'input', type: types.number, capacity: 4 });
+      builder.channel({ name: 'done', direction: 'output', type: types.number, capacity: 4 });
+      builder.start((body) => {
+        body.loop((step) => step.writeState('signal', step.receive('control', types.number)));
+      });
+      builder.on({ name: 'worker', sourcePath: ['signal'] }, (body) => {
+        body.writeState(
+          'runs',
+          body.add(body.readState('runs', types.number), body.constant(types.number, 1)),
+        );
+        body.writeState('cursor', body.constant(types.number, 0));
+        body.while(
+          (test) =>
+            test.lessThan(test.readState('cursor', types.number), test.constant(types.number, 8)),
+          (step) => {
+            const cursor = step.readState('cursor', types.number);
+            step.store8('dst', cursor, step.constant(types.number, 42));
+            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
+            step.wait(step.constant(types.number, STEP));
+          },
+        );
+        body.send('done', body.readState('runs', types.number));
+      });
+      const library = createDeviceLibrary([
+        {
+          id,
+          model: builder.finish(),
+          create: (context) => {
+            context.registerProcessBatch({ process: { kind: 'on', name: 'worker' }, loop: 0 });
+            return {
+              sync(value) {
+                for (const [name, messages] of Object.entries(value.outputs))
+                  for (const entry of messages as readonly { time: number; value: unknown }[])
+                    outputs.push({ name, time: entry.time, value: entry.value });
+              },
+              dispose() {},
+            };
+          },
+        },
+      ]);
+      const board = createBoard(
+        library,
+        { instances: [{ id: 'dev', type: id }], nets: [] },
+        batch ? { batchExecution: true } : {},
+      );
+      const instance = (board as unknown as { instances: readonly Instance[] }).instances[0]!;
+      const inputs = instance.inputs() as {
+        control: { send(value: unknown): void };
+      };
+      const read = countEvents(board);
+      inputs.control.send(5);
+      board.runUntil(0);
+      // Two more signals arrive while the worker is waiting for its next ticks slot. They
+      // coalesce into one pending activation instead of accumulating a third run.
+      inputs.control.send(6);
+      inputs.control.send(7);
+      board.runUntil(160);
+      const counters = read();
+      const result = {
+        outputs,
+        runs: instance.states.get('runs'),
+        cursor: instance.states.get('cursor'),
+        batches: processBatches(instance).length,
+        pushes: counters.pushes,
+        pops: counters.pops,
+      };
+      board.dispose();
+      return result;
+    }
+
+    const off = onProcess(false);
+    const on = onProcess(true);
+    expect(on.outputs).toEqual(off.outputs);
+    expect(on.outputs).toEqual([
+      { name: 'done', time: 80, value: 1 },
+      { name: 'done', time: 160, value: 2 },
+    ]);
+    expect(on.runs).toBe(2);
+    expect(on.cursor).toBe(8);
+    expect(on.batches).toBe(1);
+    expect(off.batches).toBe(0);
+    // A named on-process reaches the same fold path, with real queue reduction.
+    expect(on.pushes).toBeGreaterThan(0);
+    expect(on.pushes).toBeLessThan(off.pushes / 2);
+    expect(on.pops).toBeLessThan(off.pops / 2);
+  });
+
   it('rechecks dynamic code ownership after registration', () => {
     function codeOwned(batch: boolean): {
       outputs: readonly Collected[];
