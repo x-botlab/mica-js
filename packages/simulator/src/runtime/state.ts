@@ -94,15 +94,13 @@ export interface Process {
   readonly instance: Instance;
   readonly declaration: Decl<'start'> | Decl<'on'>;
   readonly source?: readonly string[];
-  /** Whole-body admission: present only when the body compiled as a resumable block. */
-  readonly resumable: ResumableProgram | undefined;
   /**
-   * Opt-in machine that owns the resume blocks named by admitted batch plans. Present only
-   * when a process registration adopted a batch-enabled program before its first run.
+   * Whole-body admission. It may be replaced by the opt-in batch-enabled machine before
+   * the first run when a registration actually admits a loop.
    */
-  batchProgram?: ResumableProgram | undefined;
-  /** Admitted batch bindings, attached only after a successful registration. */
-  batch?: readonly BoundBatch[] | undefined;
+  resumable: ResumableProgram | undefined;
+  /** Admitted batch bindings; `undefined` when no registration currently admits one. */
+  batch: readonly BoundBatch[] | undefined;
   readSource?: () => unknown;
   previous?: unknown;
   order?: number;

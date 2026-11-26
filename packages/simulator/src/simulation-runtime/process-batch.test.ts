@@ -1042,7 +1042,7 @@ describe('process batch registration', () => {
       second!.dispose();
       second!.dispose();
       expect(processBatches(instance)).toHaveLength(0);
-      // Continue the same suspended frame on the ordinary machine through real wakes.
+      // Continue the same suspended frame on the ordinary path through real wakes.
       board.runUntil(40);
       const finished = read();
       expect(instance.states.get('cursor')).toBe(4);

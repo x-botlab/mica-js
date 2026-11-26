@@ -1179,13 +1179,14 @@ class BoardRuntime implements Board {
     if (!step.done) throw new TypeError('Reaction cannot suspend');
   }
   private drive(process: Process, value?: unknown): void {
-    const program = process.batchProgram ?? process.resumable;
+    const program = process.resumable;
     if (program) {
-      if (process.batch !== undefined) {
+      const batch = process.batch;
+      if (batch !== undefined) {
         // Set the current instance at the same point the ordinary resumable path does,
         // so a decline can fall through without restoring any scheduler state.
         this.current = process.instance;
-        if (this.tryProcessBatch(process, program, process.batch)) return;
+        if (this.tryProcessBatch(process, program, batch)) return;
       }
       this.driveResumable(process, program, value);
       return;

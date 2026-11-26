@@ -427,16 +427,13 @@ export class Instance {
   private syncProcessBatches(process: Process): void {
     const registrations = this.processBatchRegistrations?.get(process);
     if (registrations === undefined || registrations.size === 0) {
-      if (process.batch !== undefined) delete process.batch;
-      process.batchProgram = undefined;
+      process.batch = undefined;
       return;
     }
     const bounds: BoundBatch[] = [];
     for (const registration of registrations.values())
       if (registration.bound !== undefined) bounds.push(registration.bound);
-    if (bounds.length === 0) {
-      if (process.batch !== undefined) delete process.batch;
-    } else process.batch = bounds;
+    process.batch = bounds.length === 0 ? undefined : bounds;
   }
   private invalidBatchBinding(message: string, cause?: unknown): SimulationError {
     return this.board.error('INVALID_BINDING', message, this, cause);
@@ -521,15 +518,19 @@ export class Instance {
       throw this.invalidBatchBinding('Duplicate process batch registration');
 
     let bound: BoundBatch | undefined;
-    if (board.batchExecution) {
+    if (board.batchExecution && process.resumable !== undefined) {
       const compilation = resumableBatch(process.declaration.body);
       if (compilation !== undefined) {
-        // The plans must describe the exact machine that will run: use the opt-in
-        // resumable program before any frame exists instead of matching pc ids across
-        // two separate compilations.
-        process.batchProgram = compilation.program;
         const plan = compilation.loops[loop as number];
-        if (plan !== undefined) bound = bindBatch(this, plan, stopBefore);
+        if (plan !== undefined) {
+          bound = bindBatch(this, plan, stopBefore);
+          if (bound !== undefined) {
+            // The plans must describe the exact machine that runs. Adopt the opt-in
+            // program only after a real admission; every other process keeps its ordinary
+            // compiled program and the baseline dispatch shape.
+            process.resumable = compilation.program;
+          }
+        }
       }
     }
     registrations.set(loop as number, { bound });
@@ -1189,6 +1190,7 @@ export class Instance {
             instance: this,
             declaration,
             resumable: resumable(declaration.body),
+            batch: undefined,
             ...(declaration.kind === 'on' ? { source: declaration.sourcePath } : {}),
             state: 'idle',
             pending: false,
