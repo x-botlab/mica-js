@@ -17,6 +17,7 @@ import {
   type JitCodeRegion,
   type JitCodeMetadataInput,
   type JitCodeMetadataProvider,
+  type JitTranslateInput,
   type Notification,
   type ReadonlyBytes,
   type RuntimeDiagnostic,
@@ -61,7 +62,9 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
       const byte: number | undefined = input.code[0];
       const base: number = input.codeBase;
       const version: number = input.codeVersion;
-      void [byte, base, version];
+      const mark: JitTranslateInput['markDirectBodyShareable'] = input.markDirectBodyShareable;
+      mark?.(input.pc, input.code.length);
+      void [byte, base, version, mark];
       builder.instruction({ pc: input.pc, nextPc: input.pc + 1 }, (body) => body.stop());
       return builder.finish();
     },
@@ -223,8 +226,16 @@ function rejectsWrongShapes(
   const retained: ReadonlyBytes = borrowed;
   // @ts-expect-error A snapshot is not a live borrowed view.
   const live: BorrowedBytes = snapshot;
+  // @ts-expect-error The optional mark must be omitted, not set to undefined.
+  const undefinedMark: JitTranslateInput = {
+    pc: 0,
+    code: borrowed,
+    codeBase: 0,
+    codeVersion: 0,
+    markDirectBodyShareable: undefined,
+  };
   // @ts-expect-error The SDK does not expose an onDiagnostic callback option.
   createBoard(library, description, { ...options, onDiagnostic() {} });
-  void [badNet, badGround, undefinedSeed, nullSeed, retained, live];
+  void [badNet, badGround, undefinedSeed, nullSeed, retained, live, undefinedMark];
 }
 void rejectsWrongShapes;
