@@ -96,6 +96,13 @@ export interface Process {
   readonly source?: readonly string[];
   /** Whole-body admission: present only when the body compiled as a resumable block. */
   readonly resumable: ResumableProgram | undefined;
+  /**
+   * Opt-in machine that owns the resume blocks named by admitted batch plans. Present only
+   * when a process registration adopted a batch-enabled program before its first run.
+   */
+  batchProgram?: ResumableProgram | undefined;
+  /** Admitted batch bindings, attached only after a successful registration. */
+  batch?: readonly BoundBatch[] | undefined;
   readSource?: () => unknown;
   previous?: unknown;
   order?: number;

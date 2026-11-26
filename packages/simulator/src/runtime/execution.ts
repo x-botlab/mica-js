@@ -11,6 +11,7 @@ import {
 } from '@mica-js/compiler';
 import type { ComputationIR, DeviceIR, RegionIR } from '@mica-js/device-model';
 import type { Instance } from './instance';
+import type { ProcessBatchPlan } from './batch';
 
 const compiledBodies = new WeakMap<RegionIR, CompiledBody>();
 /**
@@ -26,6 +27,17 @@ export function genericBodyStats(): GenericBodyStats {
   return genericBodies;
 }
 const resumablePrograms = new WeakMap<RegionIR, ResumableProgram | null>();
+/**
+ * Separate cache for the opt-in process-batch machine. The plans and the pcs they name
+ * belong to the same generated program, so registration adopts this exact program.
+ */
+const resumableBatchPrograms = new WeakMap<
+  RegionIR,
+  {
+    readonly program: ResumableProgram;
+    readonly loops: readonly (ProcessBatchPlan | undefined)[];
+  } | null
+>();
 const compiledComputations = new WeakMap<ComputationIR, (host: ExecutionHost) => unknown>();
 /**
  * Synchronous programs are instance independent, but their static function resolution
@@ -81,6 +93,28 @@ export function resumable(region: RegionIR): ResumableProgram | undefined {
   if (result === undefined) {
     result = compileResumableBody(region, { bindResources: true }) ?? null;
     resumablePrograms.set(region, result);
+  }
+  return result ?? undefined;
+}
+/**
+ * Opt-in compilation that also returns the proven process-batch plans. The returned
+ * program is the one a registered process must execute, so every plan's `resumeBlock`
+ * is a block of the actual machine rather than a coincidental pc from another build.
+ */
+export function resumableBatch(region: RegionIR):
+  | {
+      readonly program: ResumableProgram;
+      readonly loops: readonly (ProcessBatchPlan | undefined)[];
+    }
+  | undefined {
+  let result = resumableBatchPrograms.get(region);
+  if (result === undefined) {
+    const program = compileResumableBody(region, { bindResources: true, batchLoops: true });
+    result =
+      program === undefined || program.batchLoops === undefined
+        ? null
+        : { program, loops: program.batchLoops };
+    resumableBatchPrograms.set(region, result);
   }
   return result ?? undefined;
 }
