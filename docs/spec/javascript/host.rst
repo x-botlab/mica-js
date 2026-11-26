@@ -69,18 +69,19 @@
      loop: 0,
      stopBefore: 'deadline',
    });
-   // 释放后下一次调度回到普通路径。
-   registration.dispose();
+   // 候选可持续整个实例生命周期；不再需要时再释放。
+   // registration.dispose();
 
-``process`` 选择本模型声明中的过程：``start.index`` 是该声明从 0 起的序号，``on.name`` 匹配已声明的过程名。``loop`` 是该过程体直接包含的 ``while`` 按源码顺序从 0 起的序号。``stopBefore`` 可省略；存在时引用本实例的非负整数 ps ``number`` 状态，其当前值作为绝对仿真时间上限，只能收紧调度预算。省略 ``stopBefore`` 表示不增加模型时间上限。运行期读取到非法时间或越出合法范围时，本次合批尝试回退普通路径，注册保持活动。
+``process`` 选择本模型声明中的过程：``start.index`` 是在本模型全部 ``start`` 声明中从 0 起的序号，``on`` 过程不计入该序号；``on.name`` 匹配已声明的过程名。``loop`` 是该过程体直接包含的 ``while`` 按源码顺序从 0 起的序号。``stopBefore`` 可省略；存在时引用本实例的非负整数 ps ``number`` 状态，其当前值作为绝对仿真时间上限，只能收紧调度预算。省略 ``stopBefore`` 表示不增加模型时间上限。运行期读取到非法时间或越出合法范围时，本次合批尝试回退普通路径，注册保持活动。
 
-``registerProcessBatch`` 返回 ``@mica-js/core/lifecycle`` 的 ``Disposable``，重复释放安全；释放后该实例下一次调度走普通路径。同一实例的同一过程与循环序号至多有一个活动注册。过程目标、循环序号与 ``stopBefore`` 绑定在登记时校验：未知过程、越界循环、未知或非 number 状态使用 ``INVALID_BINDING``；在同步工厂初始化之外调用使用 ``INVALID_CALL_STATE``。关闭 ``batchExecution`` 的板仍执行相同的形状与绑定校验，只是不产生合批候选。
+``registerProcessBatch`` 返回 ``@mica-js/core/lifecycle`` 的 ``Disposable``，重复释放安全。释放只取消该注册；同一实例的其它活动注册保持有效，此后该过程与循环序号走普通路径。同一实例的同一过程与循环序号至多有一个活动注册。过程目标、循环序号与 ``stopBefore`` 绑定在登记时校验：未知过程、越界循环、未知或非 number 状态使用 ``INVALID_BINDING``；在同步工厂初始化之外调用使用 ``INVALID_CALL_STATE``。关闭 ``batchExecution`` 的板仍执行相同的形状与绑定校验，只是不产生合批候选。
 
 JIT 候选通过同步翻译的 ``JitTranslateInput.markBatchLoop`` 报告，仅当板启用合批且处于吞吐模式时提供。每项标记包含返回块中的循环头 ``pc`` 与可选 ``stopBefore``。每次翻译都必须重新提交标记，包括器件复用已缓存块时；非法、重复或无法证明的标记只取消该入口的优化，原 ``BlockIR`` 仍通过现有翻译校验。
 
 ``IPreparedSimulation`` 与 SDK 的 ``HeadlessRuntimeOptions`` 接受同名 ``batchExecution`` 标量。准备阶段校验该字段，建板时转发，复位重建沿用同一捕获值；失败装载保留当前可用板及待处理输入。编辑器运行 guest 通过现有 typed RPC 的装载请求传递同一开关。
 
-
+推进、故障与销毁
+------------------------------------------------
 
 板公开只读 ``time``、``status``，以及 ``runUntil(target): void`` 和 ``dispose(): void``。成功创建时 ``time`` 为 0、``status`` 为 ready；创建过程不执行模型启动过程，首次推进的初始求解见 :doc:`/execution/scheduling`。推进成功时 ``time`` 等于目标值，消息通过适配对象 ``sync`` 交付；不重复返回批次对象。
 
