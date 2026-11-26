@@ -485,6 +485,81 @@ describe('JIT batch admission conflicts', () => {
     }
   });
 
+  it('serves a JIT PC observer and resumes folding after its slot subscriber is removed', () => {
+    const observePc = (builder: DeviceBuilder) => {
+      builder.state({ name: 'pcObserverRuns', type: types.number, initial: 0 });
+      builder.on({ name: 'watchPc', sourcePath: ['pc'] }, (body) => {
+        body.writeState(
+          'pcObserverRuns',
+          body.add(body.readState('pcObserverRuns', types.number), body.constant(types.number, 1)),
+        );
+      });
+    };
+    // A plain entry changes PC once before the marked loop head. The change is visible at
+    // the publication boundary even though the loop head rewrites itself every round.
+    const translate: JitTranslate = (input, block) => {
+      if (input.pc === 0) {
+        block.instruction({ pc: 0, nextPc: 2 }, (body) => body.elapse(5));
+        block.instruction({ pc: 2, nextPc: 3 }, (body) => {
+          const cursor = body.readState('cursor', types.number);
+          body.if(body.lessThan(cursor, body.constant(types.number, DATA_LENGTH)), (step) => {
+            step.store8('dst', cursor, 42);
+            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
+            step.redirect(step.constant(types.number, 2), step.constant(types.number, STEP));
+          });
+        });
+        block.instruction({ pc: 3, nextPc: 3 }, (body) => body.stop());
+        input.markBatchLoop?.({ pc: 2 });
+      } else {
+        block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
+      }
+      return block.finish();
+    };
+    const observedOn = createHarness({
+      batch: true,
+      effect: 'fill',
+      translate,
+      configure: observePc,
+    });
+    const observedOff = createHarness({
+      batch: false,
+      effect: 'fill',
+      translate,
+      configure: observePc,
+    });
+    const control = createHarness({ batch: true, effect: 'fill', translate });
+    try {
+      observedOn.board.runUntil(500);
+      observedOff.board.runUntil(500);
+      expect(snapshot(observedOn)).toEqual(snapshot(observedOff));
+      const observedWrites = observedOn.instance.states.get('pcObserverRuns') as number;
+      expect(observedWrites).toBeGreaterThan(0);
+      expect(observedWrites).toBe(observedOff.instance.states.get('pcObserverRuns'));
+      // The live PC subscriber declines every fold before any commit.
+      const blocked = readJitBatchStats(observedOn.jit)!;
+      const commitsBefore = blocked.commits;
+      expect(commitsBefore).toBe(0);
+      expect(blocked.declines).toBeGreaterThan(0);
+
+      const pcSlot = observedOn.instance.stateResources.get('pc')!;
+      expect(pcSlot.subscribers.size).toBeGreaterThan(0);
+      for (const subscriber of [...pcSlot.subscribers]) pcSlot.subscribers.delete(subscriber);
+      observedOn.instance.observerRevision++;
+
+      observedOn.board.runUntil(2560);
+      observedOff.board.runUntil(2560);
+      control.board.runUntil(2560);
+      expect(snapshot(observedOn)).toEqual(snapshot(control));
+      expect(snapshot(observedOff)).toEqual(snapshot(control));
+      expect(readJitBatchStats(observedOn.jit)!.commits).toBeGreaterThan(commitsBefore);
+      expect(readJitBatchStats(control.jit)!.commits).toBeGreaterThan(0);
+    } finally {
+      observedOn.dispose();
+      observedOff.dispose();
+      control.dispose();
+    }
+  });
+
   it('does not accumulate Direct promotions for folded batch rounds', () => {
     const { enabled, reference, enabledHarness, referenceHarness } = runPair(
       { directTier: { promoteAfter: 1 } },
