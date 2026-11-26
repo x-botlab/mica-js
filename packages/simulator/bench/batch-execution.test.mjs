@@ -4,6 +4,8 @@ import { compileDDL } from '@mica-js/ddl';
 import * as sdk from '../dist/index.js';
 import {
   acceptanceSummary,
+  candidateVariants,
+  controlsOnlyAcceptanceSummary,
   createExercise,
   expectedProcessScheduling,
   fillDeviceSource,
@@ -46,6 +48,17 @@ test('CLI defaults and smoke overrides stay on the acceptance shape', () => {
   assert.ok(Number.isSafeInteger(browser.timeoutMs));
   assert.ok(parseBrowserArgs(['--baseline-sdk=missing']).baselineSdk.endsWith('missing'));
   assert.throws(() => parseBrowserArgs(['--baseline-sdk=a', '--baseline-sdk=b']), /Duplicate/);
+  const controlsOnly = parseBrowserArgs([
+    '--controls-only',
+    '--baseline-sdk=missing',
+    '--require-targets',
+  ]);
+  assert.equal(controlsOnly.controlsOnly, true);
+  assert.throws(() => parseBrowserArgs(['--require-baseline']), /--baseline-sdk/);
+  assert.throws(
+    () => parseBrowserArgs(['--controls-only', '--require-targets']),
+    /requires --baseline-sdk/,
+  );
   assert.equal(parseBrowserArgs(['--help']), null);
 });
 
@@ -183,6 +196,48 @@ test('acceptance summary applies wakeup, speedup and overhead thresholds to pair
   const slow = acceptanceSummary(series, { baseline: true });
   assert.equal(slow.checks.activeMedianSpeedup, false);
   assert.equal(slow.passed, false);
+});
+
+test('controls-only mode omits active and gates only baseline controls', () => {
+  const fakeSdk = {};
+  const support = { option: true, registration: true };
+  assert.deepEqual(
+    candidateVariants(fakeSdk, support).map((variant) => variant.name),
+    ['disabled', 'active', 'enabled-no-registration'],
+  );
+  assert.deepEqual(
+    candidateVariants(fakeSdk, support, { controlsOnly: true }).map((variant) => variant.name),
+    ['disabled', 'enabled-no-registration'],
+  );
+  const series = {
+    config: normalizeConfig({ iterations: 100, tickPs: 10 }),
+    variants: {
+      disabled: { warm: { medianMs: 10 } },
+      'enabled-no-registration': { warm: { medianMs: 10.2 } },
+      'baseline-disabled': { warm: { medianMs: 10 } },
+    },
+    samples: [
+      { ms: { disabled: 10, 'enabled-no-registration': 10.2, 'baseline-disabled': 10 } },
+      { ms: { disabled: 10.1, 'enabled-no-registration': 10.3, 'baseline-disabled': 10.1 } },
+    ],
+  };
+  const summary = controlsOnlyAcceptanceSummary(series, { baseline: true });
+  assert.equal(summary.mode, 'controls-only');
+  assert.equal(summary.speedOrWakeChecked, false);
+  assert.equal(summary.schedule, null);
+  assert.deepEqual(summary.gates, ['disabledVsBaseline', 'enabledNoRegistrationVsBaseline']);
+  assert.equal(summary.checks.disabledOverheadVsBaseline, true);
+  assert.equal(summary.checks.noRegistrationOverheadVsBaseline, true);
+  assert.equal(summary.passed, true);
+
+  const withoutBaseline = controlsOnlyAcceptanceSummary(series, { baseline: false });
+  assert.equal(withoutBaseline.passed, null);
+  assert.equal(withoutBaseline.checks.disabledOverheadVsBaseline, null);
+
+  series.variants['enabled-no-registration'].warm.medianMs = 10.4;
+  const failing = controlsOnlyAcceptanceSummary(series, { baseline: true });
+  assert.equal(failing.checks.noRegistrationOverheadVsBaseline, false);
+  assert.equal(failing.passed, false);
 });
 
 test('smoke benchmark records correctness before timing for every available variant', async () => {

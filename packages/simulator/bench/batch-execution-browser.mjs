@@ -41,6 +41,8 @@ const defaults = {
   chromium: undefined,
   requireBatch: false,
   requireTargets: false,
+  controlsOnly: false,
+  requireBaseline: false,
   smoke: false,
   timeoutMs: 180_000,
 };
@@ -51,10 +53,12 @@ const usage =
   '[--sdk=packages/simulator/dist/index.js] [--baseline-sdk=<dist/index.js>] ' +
   '[--baseline-sha=8a36ed4] [--chromium=<chrome>] ' +
   '[--execution=throughput|precise] [--timeout-ms=180000] [--require-batch] ' +
-  '[--require-targets] [--smoke]\n' +
+  '[--require-targets] [--controls-only] [--require-baseline] [--smoke]\n' +
   'Bundles the published dist with Vite, optionally in a second independent bundle for ' +
   'the baseline SDK, runs the shared 65,536-byte fill fixture in headless Chromium, and ' +
-  'prints JSON. Only runUntil is timed and timed runs install no probes.';
+  'prints JSON. Only runUntil is timed and timed runs install no probes. --controls-only ' +
+  'is an optional diagnostic mode that omits the active variant and gates only the two ' +
+  'no-candidate overhead controls; the default four-way mixed run is unchanged.';
 
 export function parseArgs(args) {
   const options = { ...defaults };
@@ -64,6 +68,8 @@ export function parseArgs(args) {
     if (
       argument === '--require-batch' ||
       argument === '--require-targets' ||
+      argument === '--controls-only' ||
+      argument === '--require-baseline' ||
       argument === '--smoke'
     ) {
       const name = argument.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -129,6 +135,12 @@ export function parseArgs(args) {
   options.sdk = resolve(options.sdk);
   if (options.baselineSdk !== undefined) options.baselineSdk = resolve(options.baselineSdk);
   if (options.chromium !== undefined) options.chromium = resolve(options.chromium);
+  if (options.requireBaseline && options.baselineSdk === undefined)
+    throw new RangeError('--require-baseline requires --baseline-sdk');
+  if (options.controlsOnly && options.requireTargets && options.baselineSdk === undefined)
+    throw new RangeError(
+      '--controls-only --require-targets requires --baseline-sdk for both controls',
+    );
   return options;
 }
 
@@ -368,6 +380,7 @@ const execute = async () => {
     samples: settings.samples,
     execution: settings.execution,
     requireBatch: settings.requireBatch,
+    controlsOnly: settings.controlsOnly,
   });
   return {
     ...result,
@@ -538,6 +551,7 @@ async function runBrowser(options, config, model) {
     samples: options.samples,
     execution: options.execution,
     requireBatch: options.requireBatch,
+    controlsOnly: options.controlsOnly,
   };
   let server;
   let child;
@@ -674,6 +688,9 @@ async function hostEnvironment(options, chromium, browserVersion) {
     execution: options.execution,
     warmup: options.warmup,
     samples: options.samples,
+    mode: options.controlsOnly ? 'controls-only' : 'mixed',
+    controlsOnly: options.controlsOnly === true,
+    requireBaseline: options.requireBaseline === true,
     chromium,
     browserVersion,
     sdk: { path: options.sdk, sha256: await sha256(options.sdk) },
@@ -694,13 +711,22 @@ export async function runBrowserBenchmark(options) {
   const model = await compileDDL(fillDeviceSource(config));
   const run = await runBrowser(options, config, model);
   const failures = [];
+  if (options.controlsOnly && options.requireTargets && options.baselineSdk === undefined)
+    failures.push('--controls-only --require-targets requires --baseline-sdk for both controls');
   if (options.requireTargets) {
     if (run.result.acceptance === null) failures.push('--require-targets needs batch support');
     else if (run.result.acceptance.passed !== true)
-      failures.push('acceptance thresholds were not met; inspect acceptance.checks');
+      failures.push(
+        options.controlsOnly
+          ? 'controls-only thresholds were not met; inspect acceptance.checks'
+          : 'acceptance thresholds were not met; inspect acceptance.checks',
+      );
   }
   return Object.freeze({
     kind: 'batch-execution-benchmark-browser',
+    mode: run.result.mode,
+    controlsOnly: run.result.controlsOnly,
+    speedOrWakeChecked: run.result.speedOrWakeChecked,
     environment: await hostEnvironment(options, run.chromium, run.browser),
     fixture: Object.freeze({
       source: fillDeviceSource(config),

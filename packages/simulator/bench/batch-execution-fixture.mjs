@@ -207,7 +207,7 @@ export function probeBatchSupport(sdk, model, configInput, execution = 'throughp
   }
 }
 
-export function candidateVariants(sdk, support) {
+export function candidateVariants(sdk, support, { controlsOnly = false } = {}) {
   const variants = [];
   if (support.option) {
     variants.push({
@@ -218,7 +218,7 @@ export function candidateVariants(sdk, support) {
       // pays its cold binding cost. Only the baseline SHA build cannot register.
       register: support.registration,
     });
-    if (support.registration)
+    if (support.registration && !controlsOnly)
       variants.push({
         name: 'active',
         sdk,
@@ -255,6 +255,7 @@ export function runCandidateAcceptance({
   samples = 25,
   execution = 'throughput',
   requireBatch = false,
+  controlsOnly = false,
   now = () => globalThis.performance.now(),
 }) {
   const config = normalizeConfig(configInput);
@@ -268,14 +269,19 @@ export function runCandidateAcceptance({
     if (!support.registration)
       throw new Error('batchExecution is accepted but context.registerProcessBatch is unavailable');
   }
-  const variants = candidateVariants(sdk, support);
+  const variants = candidateVariants(sdk, support, { controlsOnly });
   if (baselineSdk !== undefined)
     variants.push({ name: 'baseline-disabled', sdk: baselineSdk, register: false });
   const series = runSeries({ model, variants, configInput: config, warmup, samples, now });
   const acceptance = support.option
-    ? acceptanceSummary(series, { baseline: baselineSdk !== undefined })
+    ? controlsOnly
+      ? controlsOnlyAcceptanceSummary(series, { baseline: baselineSdk !== undefined })
+      : acceptanceSummary(series, { baseline: baselineSdk !== undefined })
     : null;
   return Object.freeze({
+    mode: controlsOnly ? 'controls-only' : 'mixed',
+    controlsOnly,
+    speedOrWakeChecked: !controlsOnly,
     config,
     support,
     variants: series.variants,
@@ -573,6 +579,55 @@ export function schedulingSummary(series) {
     admission: series.variants.active.batchAdmission,
     expected,
     activeExpectedPushes: expected.expectedPushes,
+  });
+}
+
+export function controlsOnlyAcceptanceSummary(series, { baseline = false, thresholds } = {}) {
+  const disabledVsBaseline = baseline
+    ? pairedComparison(series, 'disabled', 'baseline-disabled')
+    : null;
+  const noRegistrationVsBaseline = baseline
+    ? pairedComparison(series, 'enabled-no-registration', 'baseline-disabled')
+    : null;
+  const noRegistrationVsDisabled = pairedComparison(series, 'enabled-no-registration', 'disabled');
+  const limits = {
+    maxNoCandidateOverhead: thresholds?.maxNoCandidateOverhead ?? 0.03,
+  };
+  const checks = {
+    disabledOverheadVsBaseline:
+      disabledVsBaseline == null
+        ? null
+        : disabledVsBaseline.ratioOfMedians - 1 <= limits.maxNoCandidateOverhead,
+    noRegistrationOverheadVsBaseline:
+      noRegistrationVsBaseline == null
+        ? null
+        : noRegistrationVsBaseline.ratioOfMedians - 1 <= limits.maxNoCandidateOverhead,
+  };
+  return Object.freeze({
+    mode: 'controls-only',
+    speedOrWakeChecked: false,
+    note:
+      'Active speed and wake reduction are not measured in controls-only mode; only the ' +
+      'disabled and enabled-no-registration overhead controls are gated.',
+    thresholdBasis:
+      'ratioOfMedians across steady-state samples; medianPairedRatio is retained as a ' +
+      'pairing/noise diagnostic',
+    schedule: null,
+    comparisons: Object.freeze({
+      disabledVsBaseline,
+      enabledNoRegistrationVsBaseline: noRegistrationVsBaseline,
+      enabledNoRegistrationVsDisabled: noRegistrationVsDisabled,
+    }),
+    thresholds: Object.freeze(limits),
+    gates: baseline
+      ? Object.freeze(['disabledVsBaseline', 'enabledNoRegistrationVsBaseline'])
+      : Object.freeze([]),
+    checks: Object.freeze(checks),
+    passed:
+      baseline === false
+        ? null
+        : checks.disabledOverheadVsBaseline === true &&
+          checks.noRegistrationOverheadVsBaseline === true,
   });
 }
 

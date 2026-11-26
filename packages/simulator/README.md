@@ -141,6 +141,14 @@ node packages/simulator/bench/batch-execution-browser.mjs --chromium=$HOME/.cach
 
 脚本用 Vite 和 `import` 条件把候选与可选的基线 `@mica-js/simulator` 入口分别解析到各自的 `dist/index.js`，不启用 `source` 条件；两个 SDK 使用独立的 Vite production chunk，避免不同 worktree 的同名编译器包被错误合并。构建后校验每个 chunk 的 `@mica-js/*` 依赖都落在各自 workspace 的 `dist`，并拒绝基线解析到候选 workspace。页面通过 COOP/COEP 启用 cross-origin isolation，以获得高分辨率 `performance.now()`；每个 variant 使用独立计时闭包，避免共享一个跨候选/基线 `BoardRuntime` 类的多态调用点污染 3% 控制阈值。随后在本地 HTTP 服务上由 headless Chromium 运行同一夹具模块和同一交替采样循环。浏览器按 `~/.cache/ms-playwright/chromium-*/` 和 `chromium_headless_shell-*/` 自动发现可执行文件，也可用 `--chromium` 或 `CHROMIUM_BIN` 指定；输出包含浏览器版本、cross-origin isolation、两个 bundle 的文件/字节数与解析路径、同一组正确性、真实队列与准入计数及中位数/P95。`cold` 字段统一标为“新板 / 预采样前建板至完成”，表示同一已预热 JS engine 中的新板，不代表进程或浏览器启动。`--smoke` 使用 256 轮、1 次预热和 3 个样本，只用于验证夹具和链路，不替代 65,536 轮验收。保留的双环境记录和当前控制组结果见 [batch-execution-evidence](bench/batch-execution-evidence/README.md)。
 
+`--controls-only` 是保留默认四路混合运行的**可选诊断/复测模式**：它从正确性探针、预热和计时样本中全部移除活动组（不运行活动合批热循环），只比较关闭+同注册、开启但无注册与基线三组，沿用相同的 5 次预热、25 个交替配对样本和相对基线 3% 的稳态中位数比值阈值。输出显式包含 `mode: "controls-only"`、`controlsOnly: true` 和 `speedOrWakeChecked: false`；该模式不计算也不暗示活动加速或唤醒下降通过，只验证两个无候选控制。`--require-targets` 在该模式下要求 `--baseline-sdk`，否则创建前失败；`--require-baseline` 可单独强制要求基线。混合模式仍是默认验收口径，混合失败不会被该诊断模式替换。
+
+```bash
+node packages/simulator/bench/batch-execution-browser.mjs --controls-only \
+  --baseline-sdk=<baseline-worktree>/packages/simulator/dist/index.js \
+  --baseline-sha=8a36ed4 --require-batch --require-targets
+```
+
 电气基准独立测量缓存复用、空脏引脚提示、参考变化、分量合并/拆分及共享电源下的支路隔离，并报告分解和缓存计数。额外的非计时 instrumentation 在 `cache_verification` 中记录拓扑、计算块、物理分组构建和拓扑恢复、对角分解次数，断言电阻更新不重建拓扑，以及参考切换恢复、32/33 节点路径切换、连接变化、失败重试和缓存发布的正确性；它不是公开 SDK 统计。`reference_assembly` 将专用组装与通用组装逐值对照，覆盖形状守卫、跨节点代码复用、8 槽上限、128 个独立区域及非有限结果/分解失败的原子重试。追加 `--verify-only` 可只运行这些断言，不采集性能。共享电源场景断言物理分量始终为 1，改变一条链时仅重新分解该链，另一条链命中缓存；分解与缓存计数以计算块为单位。测量不含 DDL、装配；方程程序按需生成，首次编译成本由首次运行或预热承担。编译器基准报告冷编译、稳态吞吐和生成代码大小。数值取决于 Node.js 版本、机器与工作负载，不作为通用性能保证。
 
 ### 跨器件传播基准
