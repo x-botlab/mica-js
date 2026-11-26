@@ -53,22 +53,27 @@ export interface JitCodeRegion {
   readonly base: number;
   readonly size: number;
 }
-/** Direct 时间准入声明；`service` 引用本实例 number 状态，`blocked` 引用安静的 pure fn。 */
+/**
+ * Direct 时间准入声明；`service` 引用已声明的 number 状态，`blocked` 引用已声明、
+ * 无参且返回 bool 的 pure fn。`blocked` 仅在同时声明 `service` 时有效。
+ */
 export interface JitDirectTiming {
   /**
    * 定时服务状态名：`elapsed` 是自同一上次结算点起的已累计量，`deadline` 是该时点的期限，
-   * 单位均为 ps；`deadline` 为 0 表示当前无定时服务。两项须在运行时为非负安全整数，
+   * 单位均为 ps；`deadline` 为 0 表示当前无定时服务。两项须指向已声明的 number 状态，
+   * 未知名称或类别不符时注册以 `INVALID_BINDING` 拒绝；运行时两项须为非负安全整数，
    * 否则候选使用普通指令路径。
    */
   readonly service?: {
-    /** 自同一上次结算点起的已累计时间，单位 ps。 */
+    /** 已声明的 number 状态；自同一上次结算点起的已累计时间，单位 ps。 */
     readonly elapsed: string;
-    /** 自同一上次结算点起的期限，单位 ps；0 表示无定时服务。 */
+    /** 已声明的 number 状态；自同一上次结算点起的期限，单位 ps；0 表示无定时服务。 */
     readonly deadline: string;
   };
   /**
-   * 同步、确定、不抛错且只读的无参 bool `pure fn`。求值为 true 时该逻辑 PC 使用普通
-   * 指令路径；注册校验签名、资源与形状，编译器沿调用图证明守卫。
+   * 已声明的无参 bool `pure fn`，须同步、确定、不抛错且只读。缺少 `service`、未知名称、
+   * 类别或签名不符时注册以 `INVALID_BINDING` 拒绝。求值为 true 时该逻辑 PC 使用普通
+   * 指令路径；编译器沿调用图证明守卫。
    */
   readonly blocked?: string;
 }
@@ -92,7 +97,7 @@ export type JitLoopCandidate =
       readonly memory: string;
       readonly address: JitLoopAddress;
     };
-/** 同步翻译期提供的 Direct 时间候选标记；仅本次 `translate` 回调内有效。 */
+/** 仅当注册提供 `directTiming` 时提供的 Direct 时间候选标记；仅本次 `translate` 回调内有效。 */
 export interface JitDirectTimingInput {
   /**
    * 标记返回块中从 `pc` 起、共 `instructionCount`（2–8）条连续指令组成的合块：纯定长
@@ -198,9 +203,10 @@ export interface JitOptions {
    */
   readonly delays?: ReadonlyMap<number, JitDelay>;
   /**
-   * Direct 时间准入：`service` 指向本实例的定时服务 number 状态，`blocked` 指向安静条件。
-   * 省略时不检查服务期限与安静条件，仅按宿主上限和其余准入条件优化；守卫为真、
-   * 定时状态非法或形状无法证明时使用普通指令路径。
+   * Direct 时间准入：`service` 指向已声明的定时服务 number 状态，`blocked` 指向已声明的
+   * 安静 pure fn；`blocked` 须与 `service` 同时声明。省略时不提供时间候选标记，也不进行
+   * 服务/安静准入，普通 Direct 仍按宿主上限执行。守卫为真、定时状态非法或形状无法证明时
+   * 使用普通指令路径。
    */
   readonly directTiming?: JitDirectTiming;
   /**
@@ -210,7 +216,8 @@ export interface JitOptions {
   readonly shareDirectBodies?: boolean;
   /**
    * 跨实例翻译工件身份：`abi` 标识生成器与融合规则，`configuration` 标识时钟及特化配置。
-   * 省略时翻译结果只用于当前实例；依赖字节另由 `markTranslationDependencies` 报告。
+   * 设置后，符合该身份与依赖字节的不可变工件 MAY 跨实例复用；省略时翻译结果只用于
+   * 当前实例。依赖字节另由 `markTranslationDependencies` 报告。
    */
   readonly translationIdentity?: { readonly abi: string; readonly configuration: string };
   /**
