@@ -138,6 +138,19 @@ export interface JitInstruction {
   };
   /** 通过运行时校验的 Direct 折叠循环候选。 */
   readonly loop?: JitLoopCandidate;
+  /** 首次通用执行时编译并缓存的共享体；Direct 路径不读取。 */
+  execute?: CompiledBody;
+}
+/**
+ * Per-PC two-tier promotion record. It belongs to one JIT (and therefore one instance):
+ * counts only successful generic completions and remembers the exact translation identity.
+ */
+export interface DirectPromotion {
+  count: number;
+  state: 'generic' | 'promoted';
+  body: RegionIR;
+  nextPc: number;
+  codeVersion: number;
 }
 /** Validated polling declaration minus its PC key. */
 export type JitPollingBinding = Omit<JitPolling, 'pc'>;
@@ -194,6 +207,11 @@ export interface Jit {
   readonly cache: Map<number, JitInstruction>;
   /** 当前 cache 中拥有 instruction 的代码 memory；用于跳过无关数据写。 */
   readonly cacheMemories: Set<string>;
+  /**
+   * 两级 Direct 晋升记录，按逻辑 PC 保存；未设置 `directTier` 时始终为空。
+   * 计数和身份只在当前实例内有效，不进入共享工件缓存。
+   */
+  readonly promotions: Map<number, DirectPromotion>;
   readonly polling: ReadonlyMap<number, JitPollingBinding>;
   /** 仅 codeMetadata provider 模式存在；静态路径为 undefined。 */
   readonly metadata: JitMetadataState | undefined;
@@ -235,6 +253,8 @@ export interface Jit {
   stopped: boolean;
   queued: boolean;
   execution: Execution | undefined;
+  /** 拥有 `execution` 的通用指令；`beforeInstruction` 钩子执行时为 undefined。 */
+  genericInstruction: JitInstruction | undefined;
   predicate?: string;
   dependencies?: Dependencies;
 }

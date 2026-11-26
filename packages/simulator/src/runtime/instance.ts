@@ -5,7 +5,7 @@ import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
 import { body, computation, resumable, synchronousBody } from './execution';
 import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
-import { disposeDirect, invalidateDirect } from './jit';
+import { clearPromotions, disposeDirect, invalidateDirect } from './jit';
 import type {
   Channel,
   Decl,
@@ -815,6 +815,8 @@ export class Instance {
         jit.cache.clear();
         jit.cacheMemories.clear();
         jit.revision++;
+        // Promotion counts and routes belong to the replaced code generation.
+        clearPromotions(jit);
         // Bodies in the shared compiler cache were emitted from the replaced bytes.
         invalidateDirect(jit, true);
       } else if (jit.cacheMemories.has(name)) {
@@ -1551,6 +1553,7 @@ export class Instance {
       codeRegions: codeRegions.all,
       cache: new Map(),
       cacheMemories: new Set(),
+      promotions: new Map(),
       metadata,
       polling,
       delays: options.delays ?? new Map(),
@@ -1577,6 +1580,7 @@ export class Instance {
       stopped: false,
       queued: false,
       execution: undefined,
+      genericInstruction: undefined,
     };
     this.jits.push(jit);
     this.board.jits.push(jit);

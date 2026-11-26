@@ -1068,6 +1068,14 @@ describe('lazy generic bodies', () => {
       fallback.board.runUntil(1);
       expect(fallback.instance.states.get('prefix')).toBe(1);
       expect(genericBodyStats().compiled).toBeGreaterThan(before);
+      const compiled = genericBodyStats().compiled;
+      const reused = genericBodyStats().reused;
+      // The cached `execute` on the translated entry keeps the second generic execution
+      // from repeating the WeakMap lookup or its per-call reused counter.
+      fallback.board.runUntil(2);
+      expect(fallback.instance.states.get('prefix')).toBe(2);
+      expect(genericBodyStats().compiled).toBe(compiled);
+      expect(genericBodyStats().reused).toBe(reused);
     } finally {
       fallback.dispose();
     }

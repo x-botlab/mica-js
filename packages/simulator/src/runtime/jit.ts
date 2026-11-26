@@ -160,6 +160,16 @@ export interface DirectJitStats {
   directDispatchMisses: number;
   /** Instructions the interpreter actually started executing. */
   directGenericInstructions: number;
+  /** Successfully completed generic instructions counted toward two-tier promotion. */
+  directPromotionGenericRuns: number;
+  /** PCs whose promotion counter reached `directTier.promoteAfter`. */
+  directPromotions: number;
+  /** Direct admission attempts that stayed generic because the PC was not promoted. */
+  directTierFallbacks: number;
+  /** Promoted PCs that currently own a dispatchable route in the active session. */
+  directPromotedRoutes: number;
+  /** Promotion records cleared by primary code writes or overlapping IR replacement. */
+  directPromotionResets: number;
   /** Cumulative generated characters of emitted instruction bodies. */
   directBodyBytes: number;
   /** Instruction templates reused from the shared artifact cache by this JIT's sessions. */
@@ -315,6 +325,11 @@ function directStats(jit: Jit): DirectJitStats {
     directRoutes: 0,
     directDispatchMisses: 0,
     directGenericInstructions: 0,
+    directPromotionGenericRuns: 0,
+    directPromotions: 0,
+    directTierFallbacks: 0,
+    directPromotedRoutes: 0,
+    directPromotionResets: 0,
     directBodyBytes: 0,
     directArtifactInstructionHits: 0,
     directArtifactInstructionMisses: 0,
@@ -453,6 +468,10 @@ function syncDirectSessionStats(jit: Jit, session: DirectJitSession): void {
   directArtifactSnapshots.set(jit, artifacts);
   stats.directShards = next.shards;
   stats.directRoutes = next.routes;
+  let promotedRoutes = 0;
+  for (const [pc, promotion] of jit.promotions)
+    if (promotion.state === 'promoted' && session.has(pc)) promotedRoutes++;
+  stats.directPromotedRoutes = promotedRoutes;
   directSessionSnapshots.set(jit, { session, stats: next });
 }
 
@@ -470,6 +489,7 @@ function releaseDirectSession(jit: Jit): void {
   if (stats !== undefined) {
     stats.directShards = 0;
     stats.directRoutes = 0;
+    stats.directPromotedRoutes = 0;
     stats.directShareGroups = 0;
     stats.directSharedRoutes = 0;
   }
@@ -507,6 +527,7 @@ export function disposeDirect(jit: Jit): void {
   jit.directStale = false;
   jit.directSkip = undefined;
   jit.directMemories.clear();
+  clearPromotions(jit, false);
 }
 
 /** Region that supplies bytes for a logical PC; undefined means the service-PC fallback. */
@@ -529,6 +550,124 @@ function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
     !effectivePolling(jit).has(instruction.pc) &&
     directCodeInstruction(jit, instruction)
   );
+}
+
+/**
+ * Two-tier admission. Without `directTier` every admitted entry keeps the immediate-Direct
+ * policy; with a tier only a promoted entry whose exact translation identity still matches
+ * may enter a session.
+ */
+function directTierAdmitted(jit: Jit, instruction: JitInstruction | undefined): boolean {
+  if (jit.options.directTier === undefined) return true;
+  if (instruction === undefined) return false;
+  const promotion = jit.promotions.get(instruction.pc);
+  return (
+    promotion !== undefined &&
+    promotion.state === 'promoted' &&
+    promotion.body === instruction.body &&
+    promotion.nextPc === instruction.nextPc &&
+    promotion.codeVersion === instruction.codeVersion
+  );
+}
+
+/** Revoke one Direct route after its promotion identity changed; suspended suffixes finish. */
+function revokeDirectRoute(jit: Jit, pc: number): void {
+  const direct = jit.direct;
+  if (direct === undefined || jit.directStale || direct.frame.resume !== 0) return;
+  if (!direct.session.has(pc)) return;
+  direct.session.remove([pc]);
+  syncDirectSessionStats(jit, direct.session);
+}
+
+/**
+ * Clear every promotion record of this instance. `reset` counts the records as invalidated by
+ * primary code writes or IR replacement; explicit disposal clears them silently.
+ */
+export function clearPromotions(jit: Jit, reset = true): void {
+  if (jit.promotions.size === 0) return;
+  const stats = directJitStats(jit);
+  if (stats !== undefined) {
+    if (reset) stats.directPromotionResets += jit.promotions.size;
+    stats.directPromotedRoutes = 0;
+  }
+  jit.promotions.clear();
+}
+
+/**
+ * Count one successfully completed generic instruction. Only the shared generic body calls
+ * this, after its final suffix and after re-checking that the executed translation is still
+ * the cached one. Polling, rejected and stale paths never reach the threshold.
+ */
+function recordDirectPromotion(jit: Jit, pc: number, instruction: JitInstruction): void {
+  const tier = jit.options.directTier;
+  if (tier === undefined) return;
+  const current = jit.cache.get(pc);
+  if (
+    current === undefined ||
+    current.body !== instruction.body ||
+    current.nextPc !== instruction.nextPc ||
+    current.codeVersion !== instruction.codeVersion ||
+    !directAdmitted(jit, current)
+  )
+    return;
+  let promotion = jit.promotions.get(pc);
+  if (
+    promotion !== undefined &&
+    (promotion.body !== current.body ||
+      promotion.nextPc !== current.nextPc ||
+      promotion.codeVersion !== current.codeVersion)
+  ) {
+    // Defensive: translation-time reconciliation normally clears this before any completion.
+    jit.promotions.delete(pc);
+    revokeDirectRoute(jit, pc);
+    promotion = undefined;
+  }
+  const stats = directStats(jit);
+  if (promotion === undefined) {
+    promotion = {
+      count: 0,
+      state: 'generic',
+      body: current.body,
+      nextPc: current.nextPc,
+      codeVersion: current.codeVersion,
+    };
+    jit.promotions.set(pc, promotion);
+  } else if (promotion.state === 'promoted') return;
+  stats.directPromotionGenericRuns++;
+  if (promotion.count < tier.promoteAfter) {
+    promotion.count = Math.min(promotion.count + 1, Number.MAX_SAFE_INTEGER);
+    if (promotion.count >= tier.promoteAfter) {
+      promotion.state = 'promoted';
+      stats.directPromotions++;
+    }
+  }
+}
+
+/**
+ * Reconcile promotion state with an overlapping translation. Identical body/nextPc/version
+ * keeps the counter; any other replacement clears that PC and revokes its old route.
+ */
+function reconcilePromotions(
+  jit: Jit,
+  instructions: readonly JitInstruction[],
+  oldEntries: ReadonlyMap<number, JitInstruction>,
+): void {
+  if (jit.options.directTier === undefined || jit.promotions.size === 0) return;
+  const stats = directJitStats(jit);
+  for (const instruction of instructions) {
+    if (!oldEntries.has(instruction.pc)) continue;
+    const promotion = jit.promotions.get(instruction.pc);
+    if (promotion === undefined) continue;
+    if (
+      promotion.body === instruction.body &&
+      promotion.nextPc === instruction.nextPc &&
+      promotion.codeVersion === instruction.codeVersion
+    )
+      continue;
+    jit.promotions.delete(instruction.pc);
+    if (stats !== undefined) stats.directPromotionResets++;
+    revokeDirectRoute(jit, instruction.pc);
+  }
 }
 
 function directInstruction(jit: Jit, instruction: JitInstruction): DirectJitInstruction {
@@ -1460,7 +1599,11 @@ function addDirectInstructions(jit: Jit, instructions: readonly JitInstruction[]
   if (direct === undefined || jit.directStale || direct.frame.resume !== 0) return;
   const admitted: JitInstruction[] = [];
   for (const instruction of instructions)
-    if (directAdmitted(jit, instruction)) admitted.push(instruction);
+    if (
+      directAdmitted(jit, instruction) &&
+      (jit.options.directTier === undefined || directTierAdmitted(jit, instruction))
+    )
+      admitted.push(instruction);
   // Translation callbacks may append static delay declarations for this same batch.
   direct.session.updateDelays(directDelayLoops(jit, jit.directLayout!));
   if (admitted.length) {
@@ -1498,6 +1641,16 @@ function commitDirectTranslation(
 function ensureDirectSession(board: JitRuntimeHost, jit: Jit): DirectExecution | undefined {
   if (jit.direct !== undefined) return jit.direct;
   if (jit.directStale) jit.directStale = false;
+  const admitted: JitInstruction[] = [];
+  for (const instruction of jit.cache.values())
+    if (
+      directAdmitted(jit, instruction) &&
+      (jit.options.directTier === undefined || directTierAdmitted(jit, instruction))
+    )
+      admitted.push(instruction);
+  // In two-tier mode a session without a promoted route could only report misses and would
+  // compile nothing; leave creation to the first actual promotion.
+  if (jit.options.directTier !== undefined && admitted.length === 0) return undefined;
   const layout = directLayout(jit);
   if (jit.directCacheInvalid) {
     // Bodies from the previous code generation must never resurface through `rebuildAll`.
@@ -1512,15 +1665,12 @@ function ensureDirectSession(board: JitRuntimeHost, jit: Jit): DirectExecution |
   if (!directArtifactSnapshots.has(jit))
     directArtifactSnapshots.set(jit, compileDirectJit.artifactCacheStats(sharedDirectArtifacts));
   let session: DirectJitSession | undefined;
-  const admitted: JitInstruction[] = [];
   try {
     session = compileDirectJit.createSession(
       directBinding(jit, layout),
       cache,
       sharedDirectArtifacts,
     );
-    for (const instruction of jit.cache.values())
-      if (directAdmitted(jit, instruction)) admitted.push(instruction);
     if (admitted.length)
       session.add(admitted.map((instruction) => directInstruction(jit, instruction)));
     session.updateDelays(directDelayLoops(jit, layout));
@@ -1695,6 +1845,13 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
       return 'declined';
     refreshDirectGuards(jit, hookReads);
     if (jit.directSkip === pc) return 'declined';
+    if (jit.options.directTier !== undefined && !directTierAdmitted(jit, jit.cache.get(pc))) {
+      // The PC has not reached its promotion threshold yet. Only a translated, admitted
+      // entry is an actual two-tier fallback; an untranslated PC still needs its first
+      // generic turn and a polling/declined entry never reaches this gate.
+      if (jit.cache.has(pc)) directStats(jit).directTierFallbacks++;
+      return 'declined';
+    }
     if (jit.direct === undefined && ensureDirectSession(board, jit) === undefined)
       return 'declined';
   }
@@ -1709,10 +1866,9 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
     let reason: ReturnType<DirectJitSession['run']>;
     let wrote: boolean;
     const stats = directStats(jit);
-    const metrics = frame.directMetrics!;
-    // The compiler increments these only on optimized routes; one delta per `run` call.
-    metrics.spanRuns = 0;
-    metrics.loopRounds = 0;
+    const metrics = frame.directMetrics;
+    const beforeSpanRuns = metrics?.spanRuns ?? 0;
+    const beforeLoopRounds = metrics?.loopRounds ?? 0;
     stats.directCalls++;
     try {
       // Resource barriers exclude intermediate observers; real events retain exact deadlines.
@@ -1721,8 +1877,11 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
       try {
         wrote = flushDirect(board, instance, layout, frame);
       } finally {
-        stats.directSpanRuns += metrics.spanRuns;
-        stats.directLoopRounds += metrics.loopRounds;
+        if (metrics !== undefined) {
+          // The compiler accumulates these counters; take a delta instead of resetting them.
+          stats.directSpanRuns += metrics.spanRuns - beforeSpanRuns;
+          stats.directLoopRounds += metrics.loopRounds - beforeLoopRounds;
+        }
       }
     }
     const progressed = wrote || board.time !== start;
@@ -1821,6 +1980,7 @@ function assembleDirect(board: JitRuntimeHost, jit: Jit, pc: number): boolean {
     instruction = jit.cache.get(pc);
     return instruction !== undefined;
   }
+  if (jit.options.directTier !== undefined && !directTierAdmitted(jit, instruction)) return false;
   if (!direct.session.has(pc)) addDirectInstructions(jit, [instruction]);
   return true;
 }
@@ -1929,6 +2089,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
   if (signal.kind === 'stop') {
     jit.stopped = true;
     jit.execution = undefined;
+    if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
     board.boundary('jitSignal');
     return true;
   }
@@ -1937,6 +2098,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
     const duration = time(signal.delay);
     jit.instance.host.write(jit.options.pc, signal.pc);
     jit.execution = undefined;
+    if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
     const polling =
       jit.automaticPolling && duration > 0 && signal.pc === jit.currentPc && jit.pollReads;
     const dependencies = polling ? pollingDependencies(jit, polling, jit.currentPc) : undefined;
@@ -2086,14 +2248,20 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     if (shareMarks !== undefined)
       applyDirectShareMarks(jit, codeRegion, code.length, instructions, shareMarks);
     // Check the old cache before publishing: an overlapping block can replace a routed body
-    // instead of only adding PCs.
-    const replaced = instructions.some((entry) => jit.cache.has(entry.pc));
+    // instead of only adding PCs. Promotion identity is reconciled from the same snapshot.
+    const oldEntries = new Map<number, JitInstruction>();
+    for (const entry of instructions) {
+      const previous = jit.cache.get(entry.pc);
+      if (previous !== undefined) oldEntries.set(entry.pc, previous);
+    }
+    const replaced = oldEntries.size !== 0;
     // Match the first instruction when a block contains a repeated PC.
     for (let index = instructions.length - 1; index >= 0; index--) {
       const entry = instructions[index]!;
       jit.cache.set(entry.pc, entry);
       jit.cacheMemories.add(entry.codeRegion?.memory ?? jit.options.code);
     }
+    if (jit.options.directTier !== undefined) reconcilePromotions(jit, instructions, oldEntries);
     // A block may legally span multiple PCs. Every entry gets its own logical region; direct
     // sessions only admit primary/fallback entries. The start region only supplies the
     // translate-time byte view and codeVersion.
@@ -2134,6 +2302,7 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
   if (!jit.execution) {
     jit.automaticPolling = false;
     jit.pollReads = undefined;
+    if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
     let hookReads: Dependencies | undefined;
     let hookPending = false;
     const hook = jit.options.beforeInstruction;
@@ -2216,15 +2385,18 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       (!hook || hookReads !== undefined);
     jit.pollReads = hookReads;
     // Compile a generic body only when this instruction actually falls back to it. The
-    // compile happens before the PC write or any resource effect, so a failure leaves the
-    // original PC/state intact and keeps the translate-phase diagnostic.
+    // compiled body is cached on the translated entry so repeated generic executions pay
+    // only the generator call, not another cache lookup/statistic. The compile happens
+    // before the PC write or any resource effect, so a failure leaves the original
+    // PC/state intact and keeps the translate-phase diagnostic.
     let execute: CompiledBody;
     try {
-      execute = body(instruction.body);
+      execute = instruction.execute ??= body(instruction.body);
     } catch (cause) {
       throw board.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);
     }
     jit.instance.host.write(jit.options.pc, instruction.nextPc);
+    if (jit.options.directTier !== undefined) jit.genericInstruction = instruction;
     jit.execution = execute(jit.host);
   }
   for (;;) {
@@ -2237,6 +2409,17 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       : jit.execution.next();
     if (step.done) {
       jit.execution = undefined;
+      if (jit.options.directTier !== undefined) {
+        const instruction = jit.genericInstruction;
+        jit.genericInstruction = undefined;
+        if (
+          instruction !== undefined &&
+          !jit.automaticPolling &&
+          board.execution === 'throughput' &&
+          board.jits.length === 1
+        )
+          recordDirectPromotion(jit, instruction.pc, instruction);
+      }
       board.boundary('runJit');
       board.queueJit(jit);
       return;
