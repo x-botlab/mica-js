@@ -1,5 +1,12 @@
 # @mica-js/sdk
 
+## 0.6.4
+
+### Patch Changes
+
+- Updated dependencies [7fb9015]
+  - @mica-js/simulator@2.9.0
+
 ## 0.6.3
 
 ### Patch Changes
