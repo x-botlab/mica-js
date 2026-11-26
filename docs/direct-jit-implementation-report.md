@@ -89,6 +89,8 @@ pnpm typecheck:conformance
 
 候选在 2,421 B 固件上：`directCompiles=1`（基线 18）、`directFallbacks=0`（基线 106）、`directShardCompiles=84`、`directRouteInstalls=686`、`directGenericInstructions=0`、固定派发器 965 字符。首个 200 µs 的真实 `fallbackRate` 为 0；装配中位数约 120 ms，低于计划中的 150 ms 目标。首个推进墙钟与基线处于同一量级，未观察到显著冷启动收益，因为发布版 2.8.0 已包含常驻分片和重建步长；收益体现在固定派发器只安装一次、回退归零与增量路由。
 
+同一 2,421 B 固件在 `precise` 与 `throughput` 下推进到 200 µs 后，实例状态、全部 memory 内容、板时间与状态摘要完全一致（临时对照断言，未提交夹具）。
+
 ### CT117E-M4 别名共享 A/B
 
 使用 `sheng_12_parking.hex`、`createHarness` 和本地新运行时，属性 `directBodySharing` 关闭/开启。7 轮从冷态推进 1 ms（编译器在 `dff2c70` 后只重算受影响物理键）：
