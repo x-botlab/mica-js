@@ -46,6 +46,8 @@ export type {
   DirectJitRunResult,
   DirectJitSession,
   DirectJitSessionStats,
+  DirectJitShareCandidate,
+  DirectJitShareRejectedStats,
   ConstantMaterialization,
   ControlEdge,
   EdgeKind,
