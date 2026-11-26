@@ -1213,6 +1213,8 @@ export class Instance {
       }
       service = Object.freeze({ elapsed, deadline });
     }
+    if (Object.hasOwn(input, 'blocked') && service === undefined)
+      throw this.board.error('INVALID_BINDING', 'directTiming blocked requires service', this);
     let blocked: string | undefined;
     if (Object.hasOwn(input, 'blocked')) {
       const name = input.blocked;

@@ -689,6 +689,8 @@ function directLoopCandidate(
   if (candidate.kind === 'spin') return Object.freeze({ kind: 'spin' });
   const memory = candidate.memory;
   if (typeof memory !== 'string' || memory.length === 0) return undefined;
+  // A counter bank that is also executable would turn folding writes into code changes.
+  if (jit.codeRegions.some((region) => region.memory === memory)) return undefined;
   const counter = jit.instance.memories.get(memory);
   if (counter === undefined) return undefined;
   const address = candidate.address;

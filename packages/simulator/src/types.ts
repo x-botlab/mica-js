@@ -72,7 +72,7 @@ export interface JitDirectTiming {
     /** 自同一上次结算点起的期限，单位 ps；0 表示无定时服务。 */
     readonly deadline: string;
   };
-  /** 同步、确定、不抛错且只读的无参 bool `pure fn`；为真时使用普通指令路径。 */
+  /** 依赖 `service`；缺少 `service` 时注册被拒绝。同步、确定、不抛错且只读的无参 bool `pure fn`；为真时使用普通指令路径。 */
   readonly blocked?: string;
 }
 /** 循环计数地址：常量偏移，或由选择字节按 `(selectorByte & mask) | bits` 合成的字节偏移。 */

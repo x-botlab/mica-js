@@ -357,6 +357,7 @@ interface LoopOptions {
   readonly mark?: boolean;
   readonly address?: JitLoopAddress;
   readonly candidateAddress?: JitLoopAddress;
+  readonly candidateMemory?: string;
   readonly memory?: string;
   readonly duration?: number;
   readonly counter?: number;
@@ -368,6 +369,7 @@ interface LoopOptions {
 function createLoopHarness(options: LoopOptions = {}): Harness {
   const address = options.address ?? { kind: 'constant', offset: 5 };
   const candidate = options.candidateAddress ?? address;
+  const candidateMemory = options.candidateMemory ?? options.memory ?? 'sram';
   const memory = options.memory ?? 'sram';
   const duration = options.duration ?? 10;
   const mark = options.mark !== false;
@@ -397,7 +399,12 @@ function createLoopHarness(options: LoopOptions = {}): Harness {
         body.elapse(duration);
       });
       block.instruction({ pc: 2, nextPc: 2 }, (body) => body.stop());
-      if (mark) input.markDirectLoop?.(0, { kind: 'decrement8', memory, address: candidate });
+      if (mark)
+        input.markDirectLoop?.(0, {
+          kind: 'decrement8',
+          memory: candidateMemory,
+          address: candidate,
+        });
     } else {
       block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
     }
@@ -441,6 +448,8 @@ interface LoopRun {
   readonly loops: number;
   readonly loopRounds: number;
   readonly loopsRejected: number;
+  readonly candidates: number;
+  readonly markAddressRejected: number;
 }
 
 function loopRun(target: number, options: LoopOptions = {}): LoopRun {
@@ -461,6 +470,8 @@ function loopRun(target: number, options: LoopOptions = {}): LoopRun {
       loops: stats.directLoops,
       loopRounds: stats.directLoopRounds,
       loopsRejected: stats.directLoopRejected,
+      candidates: stats.directLoopCandidates,
+      markAddressRejected: stats.directLoopMarkRejected.address,
     };
   } finally {
     harness.dispose();
@@ -541,10 +552,51 @@ describe('direct loop folding', () => {
         bits: 0xff,
       },
       counter: 2,
+      directTiming: service(),
     });
     expect(rejectedAddress.loops).toBe(0);
     expect(rejectedAddress.loopsRejected).toBe(0);
     expect(rejectedAddress.counter).toBe(0);
+    expect(rejectedAddress.markAddressRejected).toBe(1);
+  });
+
+  it('rejects code memory counters and masked selectors in the runtime marker', () => {
+    const codeCounter = loopRun(20, {
+      memory: 'sram',
+      candidateMemory: 'code',
+      counter: 2,
+      directTiming: service(),
+    });
+    expect(codeCounter).toMatchObject({
+      counter: 0,
+      pc: 2,
+      loops: 0,
+      loopRounds: 0,
+      loopsRejected: 0,
+      candidates: 0,
+      markAddressRejected: 1,
+    });
+
+    const codeSelector = loopRun(20, {
+      candidateAddress: {
+        kind: 'maskedByte',
+        memory: 'code',
+        offset: 0,
+        mask: 0x03,
+        bits: 0,
+      },
+      counter: 2,
+      directTiming: service(),
+    });
+    expect(codeSelector).toMatchObject({
+      counter: 0,
+      pc: 2,
+      loops: 0,
+      loopRounds: 0,
+      loopsRejected: 0,
+      candidates: 0,
+      markAddressRejected: 1,
+    });
   });
 
   it('honours the blocked guard for loop folding', () => {
@@ -830,10 +882,23 @@ describe('direct timing attach validation', () => {
       { directTiming: { service: { elapsed: 'missing', deadline: 'pc' } } },
       'unknown state',
     );
-    expectAttachFailure({ directTiming: { blocked: 'pureNumber' } }, 'blocked return');
-    expectAttachFailure({ directTiming: { blocked: 'pureParam' } }, 'blocked signature');
-    expectAttachFailure({ directTiming: { blocked: 'fnBool' } }, 'blocked purity');
-    expectAttachFailure({ directTiming: { blocked: '' } }, 'blocked empty');
+    expectAttachFailure({ directTiming: { blocked: 'pureBool' } }, 'blocked requires service');
+    expectAttachFailure(
+      { directTiming: { service: { elapsed: 'pc', deadline: 'pc' }, blocked: 'pureNumber' } },
+      'blocked return',
+    );
+    expectAttachFailure(
+      { directTiming: { service: { elapsed: 'pc', deadline: 'pc' }, blocked: 'pureParam' } },
+      'blocked signature',
+    );
+    expectAttachFailure(
+      { directTiming: { service: { elapsed: 'pc', deadline: 'pc' }, blocked: 'fnBool' } },
+      'blocked purity',
+    );
+    expectAttachFailure(
+      { directTiming: { service: { elapsed: 'pc', deadline: 'pc' }, blocked: '' } },
+      'blocked empty',
+    );
     expectAttachFailure({ directTiming: [] }, 'timing kind');
 
     expectAttachFailure({ translationIdentity: { abi: 'x' } }, 'identity missing');
@@ -845,6 +910,43 @@ describe('direct timing attach validation', () => {
 
     for (const promoteAfter of [0, -1, 1.5, '2', Number.MAX_SAFE_INTEGER + 1])
       expectAttachFailure({ directTier: { promoteAfter } }, `promoteAfter ${promoteAfter}`);
+  });
+
+  it('rejects a blocked guard without service and registers no JIT', () => {
+    const model = validationModel();
+    let failure: unknown;
+    const library = createDeviceLibrary([
+      {
+        id: 'blocked-only',
+        model,
+        create: (context) => {
+          try {
+            context.attachJit({
+              entry: 'blocked-only',
+              code: 'code',
+              pc: 'pc',
+              directTiming: { blocked: 'pureBool' },
+              translate: noopTranslate,
+            });
+          } catch (cause) {
+            failure = cause;
+          }
+          return { sync() {}, dispose() {} };
+        },
+      },
+    ]);
+    const board = createBoard(library, {
+      instances: [{ id: 'blocked-only', type: 'blocked-only' }],
+      nets: [],
+    });
+    try {
+      expect(failure).toBeInstanceOf(SimulationError);
+      expect(hasDiagnostic(failure, 'INVALID_BINDING')).toBe(true);
+      const instance = (board as unknown as { instances: readonly Instance[] }).instances[0]!;
+      expect(instance.jits).toHaveLength(0);
+    } finally {
+      board.dispose();
+    }
   });
 
   it('stores frozen validated options', () => {
