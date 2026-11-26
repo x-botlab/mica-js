@@ -17,6 +17,7 @@ import {
   type JitCodeRegion,
   type JitCodeMetadataInput,
   type JitCodeMetadataProvider,
+  type JitOptions,
   type JitTranslateInput,
   type Notification,
   type ReadonlyBytes,
@@ -50,6 +51,7 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
     code: 'code',
     codeRegions: [additionalCode],
     pc: 'position',
+    shareDirectBodies: true,
     polling: [
       {
         pc: 0,
@@ -234,6 +236,17 @@ function rejectsWrongShapes(
     codeVersion: 0,
     markDirectBodyShareable: undefined,
   };
+  // @ts-expect-error Explicit undefined is not omission.
+  const undefinedSharing: JitOptions = {
+    entry: 'sharing',
+    code: 'code',
+    pc: 'position',
+    shareDirectBodies: undefined,
+    translate: () => {
+      throw new Error('unreachable');
+    },
+  };
+  void undefinedSharing;
   // @ts-expect-error The SDK does not expose an onDiagnostic callback option.
   createBoard(library, description, { ...options, onDiagnostic() {} });
   void [badNet, badGround, undefinedSeed, nullSeed, retained, live, undefinedMark];

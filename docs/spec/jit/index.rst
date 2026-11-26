@@ -23,6 +23,8 @@ JIT 入口将实例中的代码字节按需转换为共享 IR，并通过仿真�
 
 可选 ``beforeInstruction`` 仅省略时表示无钩子；``polling`` 仅省略时表示无显式轮询声明，空数组同样有效。显式 ``undefined`` 或 ``null`` 按原值校验并拒绝；选项及轮询项中的未知字段拒绝。``polling`` 的绑定和等待语义见 :doc:`throughput`；其他可选字段同样只有省略才采用默认。
 
+``shareDirectBodies`` 仅省略时为 ``false``。启用时，运行时在同步 ``translate`` 回调期间提供 ``markDirectBodyShareable``；通过校验的标记按代码存储身份、版本、物理偏移和长度参与 Direct 指令体复用。关闭时不提供该回调，所有入口独立执行。
+
 ``entry`` 是本实例唯一入口名，``code`` 是本实例 memory 名称，``pc`` 是本实例 number state 名称。
 
 名称以 ``string`` 传入，在绑定时校验存在性、资源类别和签名；执行时使用已经解析的引用。

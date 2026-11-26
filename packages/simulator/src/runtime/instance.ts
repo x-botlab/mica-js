@@ -1329,6 +1329,7 @@ export class Instance {
       'beforeInstruction',
       'polling',
       'delays',
+      'shareDirectBodies',
       'translate',
     ]);
     identity(options.entry);
@@ -1375,6 +1376,11 @@ export class Instance {
       : new Map<number, JitPollingBinding>();
     if (Object.hasOwn(options, 'delays') && !(options.delays instanceof Map))
       throw new TypeError('delays must be a Map');
+    if (
+      Object.hasOwn(options, 'shareDirectBodies') &&
+      typeof options.shareDirectBodies !== 'boolean'
+    )
+      throw new TypeError('shareDirectBodies must be a boolean');
     const metadata = Object.hasOwn(options, 'codeMetadata')
       ? {
           regions: new Map(

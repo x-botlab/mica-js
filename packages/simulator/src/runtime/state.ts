@@ -3,6 +3,7 @@ import type {
   CompiledBody,
   DirectJitFrame,
   DirectJitSession,
+  DirectJitShareCandidate,
   ExecutionSignal,
   ExecutionHost,
   ReactionFrame,
@@ -127,6 +128,10 @@ export interface JitInstruction {
   readonly polling: boolean;
   /** 该 instruction 的代码 region；服务 PC 回退主 code 时为 undefined。 */
   readonly codeRegion: JitCodeRegion | undefined;
+  /** 按该 entry 的代码 memory 在翻译时读取的版本。 */
+  readonly codeVersion: number;
+  /** 通过运行时校验的 Direct 指令体共享候选。 */
+  readonly share?: DirectJitShareCandidate;
 }
 /** Validated polling declaration minus its PC key. */
 export type JitPollingBinding = Omit<JitPolling, 'pc'>;

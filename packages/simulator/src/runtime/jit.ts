@@ -6,6 +6,7 @@ import {
   type DirectJitInstruction,
   type DirectJitSession,
   type DirectJitSessionStats,
+  type DirectJitShareRejectedStats,
   type ExecutionSignal,
 } from '@mica-js/compiler';
 import { createJitBlockBuilder, validateBoundBlockIR } from '@mica-js/device-model';
@@ -54,6 +55,31 @@ export type BoundarySource =
   | 'process'
   | 'other';
 
+/** Runtime-side classifications of a rejected `markDirectBodyShareable` call. */
+export interface DirectShareMarkRejectedStats {
+  /** The marked PC is not an instruction entry of the returned block. */
+  unknownPc: number;
+  /** The same block marked one instruction entry more than once. */
+  duplicate: number;
+  /** The PC is not a non-negative safe integer. */
+  invalidPc: number;
+  /** The byte length is not a positive safe integer. */
+  invalidLength: number;
+  /** The byte range leaves the start region or the borrowed view. */
+  outsideRegion: number;
+  /** The entry was fetched through a different logical window than the start PC. */
+  crossView: number;
+  /** The entry has no code region and would be fetched by the service-PC fallback. */
+  service: number;
+  /** The entry is polling or does not use the primary code memory. */
+  notAdmitted: number;
+}
+
+/** Mutable copy of the compiler's cumulative rejection counters. */
+export type DirectShareRejectedStats = {
+  -readonly [K in keyof DirectJitShareRejectedStats]: number;
+};
+
 /**
  * Deterministic direct-execution counters, kept on the `Jit` itself so `Board.jits` stays the
  * only diagnostic surface: the benchmark reads them instead of patching runtime internals.
@@ -89,6 +115,26 @@ export interface DirectJitStats {
   directDispatcherBytes: number;
   /** Cumulative generated characters of synchronous helper functions. */
   directHelperBytes: number;
+  /** `markDirectBodyShareable` callbacks received while a translation is in progress. */
+  directShareCallbacks: number;
+  /** Marked entries that passed runtime validation across all translations. */
+  directShareCandidates: number;
+  /** Equivalence groups currently backed by a shared body in the active session. */
+  directShareGroups: number;
+  /** Current routes that point at a shared body. */
+  directSharedRoutes: number;
+  /** Cumulative shared step/resume bodies emitted across all sessions. */
+  directSharedBodies: number;
+  /** Cumulative generated characters of emitted shared bodies. */
+  directSharedBytes: number;
+  /** Cumulative marked routes that reused an already emitted shared body. */
+  directShareReusedBodies: number;
+  /** Cumulative route installs that selected a shared body. */
+  directShareReusedRoutes: number;
+  /** Compiler-side classifications for marked entries that stayed independent. */
+  directShareRejected: DirectShareRejectedStats;
+  /** Runtime-side classifications for rejected marks; the entry still executes normally. */
+  directShareMarkRejected: DirectShareMarkRejectedStats;
 }
 
 /**
@@ -182,6 +228,33 @@ function directStats(jit: Jit): DirectJitStats {
     directShardBytes: 0,
     directDispatcherBytes: 0,
     directHelperBytes: 0,
+    directShareCallbacks: 0,
+    directShareCandidates: 0,
+    directShareGroups: 0,
+    directSharedRoutes: 0,
+    directSharedBodies: 0,
+    directSharedBytes: 0,
+    directShareReusedBodies: 0,
+    directShareReusedRoutes: 0,
+    directShareRejected: {
+      missing: 0,
+      invalid: 0,
+      single: 0,
+      ir: 0,
+      delay: 0,
+      isolated: 0,
+      context: 0,
+    },
+    directShareMarkRejected: {
+      unknownPc: 0,
+      duplicate: 0,
+      invalidPc: 0,
+      invalidLength: 0,
+      outsideRegion: 0,
+      crossView: 0,
+      service: 0,
+      notAdmitted: 0,
+    },
   });
 }
 
@@ -213,6 +286,23 @@ function syncDirectSessionStats(jit: Jit, session: DirectJitSession): void {
   stats.directShardBytes += next.shardBytes - (base?.shardBytes ?? 0);
   stats.directDispatcherBytes += next.dispatcherBytes - (base?.dispatcherBytes ?? 0);
   stats.directHelperBytes += next.helperBytes - (base?.helperBytes ?? 0);
+  stats.directShareGroups = next.shareGroups;
+  stats.directSharedRoutes = next.sharedRoutes;
+  stats.directSharedBodies += next.sharedBodies - (base?.sharedBodies ?? 0);
+  stats.directSharedBytes += next.sharedBytes - (base?.sharedBytes ?? 0);
+  stats.directShareReusedBodies += next.shareReusedBodies - (base?.shareReusedBodies ?? 0);
+  stats.directShareReusedRoutes += next.shareReusedRoutes - (base?.shareReusedRoutes ?? 0);
+  stats.directShareRejected.missing +=
+    next.shareRejected.missing - (base?.shareRejected.missing ?? 0);
+  stats.directShareRejected.invalid +=
+    next.shareRejected.invalid - (base?.shareRejected.invalid ?? 0);
+  stats.directShareRejected.single += next.shareRejected.single - (base?.shareRejected.single ?? 0);
+  stats.directShareRejected.ir += next.shareRejected.ir - (base?.shareRejected.ir ?? 0);
+  stats.directShareRejected.delay += next.shareRejected.delay - (base?.shareRejected.delay ?? 0);
+  stats.directShareRejected.isolated +=
+    next.shareRejected.isolated - (base?.shareRejected.isolated ?? 0);
+  stats.directShareRejected.context +=
+    next.shareRejected.context - (base?.shareRejected.context ?? 0);
   stats.directShards = next.shards;
   stats.directRoutes = next.routes;
   directSessionSnapshots.set(jit, { session, stats: next });
@@ -232,6 +322,8 @@ function releaseDirectSession(jit: Jit): void {
   if (stats !== undefined) {
     stats.directShards = 0;
     stats.directRoutes = 0;
+    stats.directShareGroups = 0;
+    stats.directSharedRoutes = 0;
   }
 }
 
@@ -291,8 +383,102 @@ function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
   );
 }
 
-function directInstruction(instruction: JitInstruction): DirectJitInstruction {
-  return { pc: instruction.pc, nextPc: instruction.nextPc, body: instruction.body };
+function directInstruction(jit: Jit, instruction: JitInstruction): DirectJitInstruction {
+  return {
+    pc: instruction.pc,
+    nextPc: instruction.nextPc,
+    body: instruction.body,
+    // Sharing is opt-in per registration; a candidate collected in an earlier translation
+    // of the same option state is only forwarded by a sharing session.
+    ...(jit.options.shareDirectBodies === true && instruction.share !== undefined
+      ? { share: instruction.share }
+      : {}),
+  };
+}
+
+/** One `markDirectBodyShareable` call collected during a synchronous translation. */
+interface DirectShareMark {
+  readonly pc: number;
+  readonly byteLength: number;
+}
+
+/**
+ * Attach validated marks to their translated entries. The block itself is already committed
+ * to the interpreter path, so every rejection only drops sharing for that entry; it never
+ * rejects the translation. Runs once per translated block, never on the `run` hot path.
+ */
+function applyDirectShareMarks(
+  jit: Jit,
+  startRegion: JitCodeRegion | undefined,
+  codeLength: number,
+  instructions: JitInstruction[],
+  marks: readonly DirectShareMark[],
+): void {
+  if (marks.length === 0) return;
+  const indexByPc = new Map<number, number>();
+  for (let index = 0; index < instructions.length; index++) {
+    const pc = instructions[index]!.pc;
+    if (!indexByPc.has(pc)) indexByPc.set(pc, index);
+  }
+  const stats = directStats(jit);
+  const rejected = stats.directShareMarkRejected;
+  const seen = new Set<number>();
+  for (const { pc, byteLength } of marks) {
+    if (!Number.isSafeInteger(pc) || pc < 0) {
+      rejected.invalidPc++;
+      continue;
+    }
+    if (!Number.isSafeInteger(byteLength) || byteLength <= 0) {
+      rejected.invalidLength++;
+      continue;
+    }
+    if (seen.has(pc)) {
+      rejected.duplicate++;
+      continue;
+    }
+    seen.add(pc);
+    const index = indexByPc.get(pc);
+    if (index === undefined) {
+      rejected.unknownPc++;
+      continue;
+    }
+    const instruction = instructions[index]!;
+    const region = instruction.codeRegion;
+    if (region === undefined) {
+      rejected.service++;
+      continue;
+    }
+    // The borrowed view was cut from the start region. An entry fetched through another
+    // window is not physically comparable even when both windows name the same storage.
+    if (startRegion === undefined || region !== startRegion) {
+      rejected.crossView++;
+      continue;
+    }
+    const offset = pc - region.base;
+    if (
+      offset < 0 ||
+      !Number.isSafeInteger(offset + byteLength) ||
+      offset + byteLength > region.size ||
+      offset + byteLength > codeLength
+    ) {
+      rejected.outsideRegion++;
+      continue;
+    }
+    if (!directAdmitted(jit, instruction)) {
+      rejected.notAdmitted++;
+      continue;
+    }
+    instructions[index] = {
+      ...instruction,
+      share: Object.freeze({
+        storage: region.memory,
+        codeVersion: instruction.codeVersion,
+        offset,
+        byteLength,
+      }),
+    };
+    stats.directShareCandidates++;
+  }
 }
 
 function effectivePolling(jit: Jit): ReadonlyMap<number, JitPollingBinding> {
@@ -769,7 +955,7 @@ function addDirectInstructions(jit: Jit, instructions: readonly JitInstruction[]
   // Translation callbacks may append static delay declarations for this same batch.
   direct.session.updateDelays(directDelayLoops(jit, jit.directLayout!));
   if (admitted.length) {
-    direct.session.add(admitted.map(directInstruction));
+    direct.session.add(admitted.map((instruction) => directInstruction(jit, instruction)));
     for (const instruction of admitted)
       jit.directMemories.add(instruction.codeRegion?.memory ?? jit.options.code);
     growDirectLocals(direct);
@@ -818,7 +1004,8 @@ function ensureDirectSession(board: JitRuntimeHost, jit: Jit): DirectExecution |
     session = compileDirectJit.createSession(directBinding(jit, layout), cache);
     for (const instruction of jit.cache.values())
       if (directAdmitted(jit, instruction)) admitted.push(instruction);
-    if (admitted.length) session.add(admitted.map(directInstruction));
+    if (admitted.length)
+      session.add(admitted.map((instruction) => directInstruction(jit, instruction)));
     session.updateDelays(directDelayLoops(jit, layout));
   } catch (cause) {
     session?.dispose();
@@ -1253,6 +1440,7 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
   const prior = board.phase;
   board.phase = 'translate';
   let valid = true;
+  let marking = false;
   try {
     const codeRegion = codeRegionFor(jit, pc);
     const codeMemory = codeRegion?.memory ?? jit.options.code;
@@ -1264,16 +1452,31 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     const code = bytesView(bytes, () => {
       if (!valid) throw board.error('OBJECT_DISPOSED', 'Translation view expired', jit.instance);
     });
+    // Marks are only collected while the synchronous translate callback is on the stack.
+    // A later call through a retained reference sees `marking === false` and is ignored.
+    const shareMarks: DirectShareMark[] | undefined =
+      jit.options.shareDirectBodies === true ? [] : undefined;
+    marking = shareMarks !== undefined;
     const result = jit.options.translate(
       Object.freeze({
         pc,
         code: code as import('../types').BorrowedBytes,
         codeBase: codeRegion?.base ?? 0,
         codeVersion: jit.instance.codeVersion(codeMemory),
+        ...(shareMarks === undefined
+          ? {}
+          : {
+              markDirectBodyShareable: (markPc: number, byteLength: number): void => {
+                if (!marking) return;
+                directStats(jit).directShareCallbacks++;
+                shareMarks.push({ pc: markPc, byteLength });
+              },
+            }),
       }),
       createJitBlockBuilder({ device: jit.model }),
     );
     acceptSync(result);
+    marking = false;
     const block = validateBoundBlockIR(result, jit.model);
     if (block.instructions[0]?.pc !== pc) throw new TypeError('Translated first pc does not match');
     const instructions = block.instructions.map((instruction) => {
@@ -1285,8 +1488,11 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
         polling: isPollingInstruction(instruction.body, instruction.pc, jit.options.pc),
         execute: body(instruction.body),
         codeRegion: region,
+        codeVersion: jit.instance.codeVersion(region?.memory ?? jit.options.code),
       };
     });
+    if (shareMarks !== undefined)
+      applyDirectShareMarks(jit, codeRegion, code.length, instructions, shareMarks);
     // Check the old cache before publishing: an overlapping block can replace a routed body
     // instead of only adding PCs.
     const replaced = instructions.some((entry) => jit.cache.has(entry.pc));
@@ -1312,6 +1518,7 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     throw board.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);
   } finally {
     valid = false;
+    marking = false;
     board.phase = prior;
   }
 }
