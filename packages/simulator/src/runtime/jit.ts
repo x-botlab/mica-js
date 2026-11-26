@@ -116,7 +116,7 @@ export interface DirectSpanMarkRejectedStats {
   discontinuous: number;
   /** A member is polling, belongs to another code memory or is a service fallback. */
   notAdmitted: number;
-  /** A loop mark names the same entry. */
+  /** A loop mark names the same entry, or the span covers an accepted batch head. */
   conflict: number;
 }
 /** Runtime-side classifications of a rejected `markDirectLoop` call. */
@@ -423,8 +423,8 @@ export function directJitStats(jit: Jit): DirectJitStats | undefined {
 }
 
 /**
- * Internal JIT batch counters. They are allocated only after a marked route exists and
- * the board actually enables batch execution, so unmarked workloads pay one map lookup.
+ * Internal JIT batch counters. They are allocated only with checkpoint diagnostics, so
+ * formal runs keep the dispatch and commit paths free of counter bookkeeping.
  */
 export interface JitBatchStats {
   /** Marked entries reached by `runJit`, before the scheduler window is known. */
@@ -590,14 +590,21 @@ function directCodeInstruction(jit: Jit, instruction: JitInstruction): boolean {
   return region === undefined || region.memory === jit.options.code;
 }
 
-/** One cache entry may join the direct session: primary code and no effective polling. */
-function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
+/**
+ * Baseline Direct timing admission. Direct timing marks are validated against this shape
+ * first so an existing declaration keeps precedence over a batch mark on the same entry.
+ */
+function directTimingAdmitted(jit: Jit, instruction: JitInstruction): boolean {
   return (
-    instruction.batch === undefined &&
     !instruction.polling &&
     !effectivePolling(jit).has(instruction.pc) &&
     directCodeInstruction(jit, instruction)
   );
+}
+
+/** One cache entry may join the direct session: primary code and no effective polling. */
+function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
+  return instruction.batch === undefined && directTimingAdmitted(jit, instruction);
 }
 
 /**
@@ -909,11 +916,13 @@ function captureLoopCandidate(value: unknown): CapturedLoopCandidate | undefined
   }
 }
 
-/** Primary memory and the ordinary Direct admission shared by span members. */
+/** Primary memory and the baseline Direct timing admission shared by span members. */
 function directPrimaryAdmitted(jit: Jit, instruction: JitInstruction): boolean {
   const region = instruction.codeRegion;
   return (
-    region !== undefined && region.memory === jit.options.code && directAdmitted(jit, instruction)
+    region !== undefined &&
+    region.memory === jit.options.code &&
+    directTimingAdmitted(jit, instruction)
   );
 }
 
@@ -984,23 +993,41 @@ function directLoopCandidate(
 
 /** One `markBatchLoop` call copied while the translate callback is on the stack. */
 interface CapturedBatchMark {
-  readonly pc: unknown;
+  /** Finite plain-data PC, retained even when another field makes the mark invalid. */
+  readonly pc: number | undefined;
   readonly stopBefore: unknown;
   readonly hasStopBefore: boolean;
+  /** The complete mark has the exact plain-data shape and a finite PC. */
+  readonly valid: boolean;
 }
 
 function captureBatchMark(value: unknown): CapturedBatchMark {
+  let pc: number | undefined;
+  let stopBefore: unknown;
+  let hasStopBefore = false;
   try {
+    if (value !== null && typeof value === 'object') {
+      // Never invoke a getter: only a plain own data field can provide duplicate identity
+      // when another field of the same mark is malformed.
+      const descriptor = Object.getOwnPropertyDescriptor(value, 'pc');
+      if (
+        descriptor !== undefined &&
+        'value' in descriptor &&
+        typeof descriptor.value === 'number' &&
+        Number.isFinite(descriptor.value)
+      )
+        pc = descriptor.value;
+    }
     dataObject(value, ['pc', 'stopBefore']);
-    const record = value as { readonly pc?: unknown; readonly stopBefore?: unknown };
-    const hasStopBefore = Object.hasOwn(value, 'stopBefore');
-    return {
-      pc: record.pc,
-      stopBefore: hasStopBefore ? record.stopBefore : undefined,
-      hasStopBefore,
-    };
+    if (pc === undefined)
+      return { pc: undefined, stopBefore: undefined, hasStopBefore: false, valid: false };
+    hasStopBefore = Object.hasOwn(value, 'stopBefore');
+    stopBefore = hasStopBefore
+      ? (value as { readonly stopBefore?: unknown }).stopBefore
+      : undefined;
+    return { pc, stopBefore, hasStopBefore, valid: true };
   } catch {
-    return { pc: undefined, stopBefore: undefined, hasStopBefore: false };
+    return { pc, stopBefore, hasStopBefore, valid: false };
   }
 }
 
@@ -1028,12 +1055,13 @@ function applyBatchMarks(
   }
   const validPcs = new Map<number, number>();
   for (const mark of marks) {
-    if (typeof mark.pc !== 'number' || !Number.isSafeInteger(mark.pc) || mark.pc < 0) continue;
-    validPcs.set(mark.pc, (validPcs.get(mark.pc) ?? 0) + 1);
+    // Duplicate identity is independent of the rest of the mark: one malformed copy still
+    // cancels a valid mark for the same PC instead of leaving callback order significant.
+    if (mark.pc !== undefined) validPcs.set(mark.pc, (validPcs.get(mark.pc) ?? 0) + 1);
   }
   for (const mark of marks) {
     const { pc } = mark;
-    if (typeof pc !== 'number' || !Number.isSafeInteger(pc) || pc < 0) continue;
+    if (pc === undefined || !mark.valid) continue;
     // A duplicated mark is ambiguous. Drop every copy instead of letting callback order
     // decide which proof the cache entry keeps.
     if ((validPcs.get(pc) ?? 0) !== 1) continue;
@@ -1044,8 +1072,16 @@ function applyBatchMarks(
     if (indices === undefined || indices.length !== 1) continue;
     const index = indices[0]!;
     const instruction = instructions[index]!;
-    // Only a physical entry from a bound code region may own a batch route.
-    if (instruction.codeRegion === undefined || instruction.batch !== undefined) continue;
+    // Only a physical entry from a bound code region may own a batch route. Polling and
+    // busy-wait declarations keep their existing route instead of receiving a batch one.
+    if (
+      instruction.codeRegion === undefined ||
+      instruction.batch !== undefined ||
+      instruction.polling ||
+      effectivePolling(jit).has(pc) ||
+      effectiveDelays(jit).has(pc)
+    )
+      continue;
     let plan: ReturnType<typeof proveJitBatch>;
     try {
       plan = proveJitBatch(canonical[index]!);
@@ -1074,6 +1110,43 @@ function applyBatchMarks(
     )
       continue;
     instructions[index] = { ...instructions[index]!, batch: bound };
+  }
+}
+
+/**
+ * Resolve batch routes against baseline-valid Direct timing declarations. Instructions are
+ * visited in reverse array order because a span only covers members at later indices:
+ *
+ * - a loop or span starting on a batch head wins, stripping that head's batch route;
+ * - a span survives only when every interior member is still a batch-free entry after its
+ *   own same-entry decision, so an interior head that loses to Direct cannot drop it;
+ * - a rejected span increments the existing conflict diagnostic and is not counted as a
+ *   candidate, while all interior accepted batch heads keep their routes.
+ */
+function resolveBatchDirectConflicts(jit: Jit, instructions: JitInstruction[]): void {
+  if (!instructions.some((instruction) => instruction.batch !== undefined)) return;
+  const stats = directStats(jit);
+  for (let index = instructions.length - 1; index >= 0; index--) {
+    let instruction = instructions[index]!;
+    if (instruction.span !== undefined) {
+      const members = instructions.slice(index, index + instruction.span.pcs.length);
+      if (members.some((member, offset) => offset !== 0 && member.batch !== undefined)) {
+        const withoutSpan: JitInstruction = { ...instruction };
+        delete (withoutSpan as { span?: JitInstruction['span'] }).span;
+        instructions[index] = withoutSpan;
+        instruction = withoutSpan;
+        stats.directSpanCandidates--;
+        stats.directSpanMarkRejected.conflict++;
+      }
+    }
+    if (
+      instruction.batch !== undefined &&
+      (instruction.loop !== undefined || instruction.span !== undefined)
+    ) {
+      const withoutBatch: JitInstruction = { ...instruction };
+      delete (withoutBatch as { batch?: JitInstruction['batch'] }).batch;
+      instructions[index] = withoutBatch;
+    }
   }
 }
 
@@ -1217,7 +1290,7 @@ function applyDirectTimingMarks(
       continue;
     }
     const instruction = instructions[index]!;
-    if (!directAdmitted(jit, instruction)) {
+    if (!directTimingAdmitted(jit, instruction)) {
       loopRejected.notAdmitted++;
       continue;
     }
@@ -2325,13 +2398,13 @@ function tryJitBatch(
   if (instruction.codeVersion !== jit.instance.codeVersion(memory)) return false;
   if (instruction.polling || effectivePolling(jit).has(pc) || effectiveDelays(jit).has(pc))
     return false;
-  const stats = jitBatchStats(jit);
-  stats.attempts++;
+  const stats = board.checkpointDiagnostics ? jitBatchStats(jit) : undefined;
+  if (stats !== undefined) stats.attempts++;
   const start = board.time;
   const yieldAt = Math.min(MAX_TIME, start + board.cpuQuantum);
   const prepared = board.prepareBatch(batch, yieldAt);
   if (prepared === undefined) {
-    stats.declines++;
+    if (stats !== undefined) stats.declines++;
     return false;
   }
   const { due, lastAt } = prepared;
@@ -2346,7 +2419,7 @@ function tryJitBatch(
     !Number.isSafeInteger(rounds) ||
     rounds < 2
   ) {
-    stats.declines++;
+    if (stats !== undefined) stats.declines++;
     return false;
   }
   // Allocate the one-shot wake before the commit: no callback may observe a committed
@@ -2365,8 +2438,10 @@ function tryJitBatch(
   jit.automaticPolling = false;
   jit.pollReads = undefined;
   if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
-  stats.commits++;
-  stats.foldedRounds += rounds;
+  if (stats !== undefined) {
+    stats.commits++;
+    stats.foldedRounds += rounds;
+  }
   board.boundary('runJit');
   board.events.push(due, wake);
   return true;
@@ -2505,12 +2580,14 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
         codeVersion: jit.instance.codeVersion(region?.memory ?? jit.options.code),
       };
     });
-    // Attach batch routes first: Direct timing and sharing read `directAdmitted`, which
-    // excludes an accepted head, and a span containing it must fail as a whole.
+    // Batch routes are attached first so the Direct timing pass can distinguish a span
+    // that starts on a head (Direct wins) from one that would cover a different head.
     if (batchMarks !== undefined)
       applyBatchMarks(jit, block.instructions, instructions, batchMarks);
-    if (spanMarks !== undefined || loopMarks !== undefined)
+    if (spanMarks !== undefined || loopMarks !== undefined) {
       applyDirectTimingMarks(jit, instructions, spanMarks ?? [], loopMarks ?? []);
+      if (batchMarks !== undefined) resolveBatchDirectConflicts(jit, instructions);
+    }
     if (shareMarks !== undefined)
       applyDirectShareMarks(jit, codeRegion, code.length, instructions, shareMarks);
     // Check the old cache before publishing: an overlapping block can replace a routed body
@@ -2539,8 +2616,9 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
       jit.revision++;
     jit.directSkip = undefined;
     // Replacing a block can turn a previously Direct-admitted PC into a batch head. Remove
-    // those routes before the new translation can be dispatched.
-    retractBatchDirectRoutes(jit, instructions);
+    // those routes before the new translation can be dispatched. Disabled boards cannot
+    // have accepted marks, so they skip the scan entirely.
+    if (batchMarks !== undefined) retractBatchDirectRoutes(jit, instructions);
     commitDirectTranslation(jit, instructions, replaced);
     return instructions;
   } catch (cause) {
@@ -2630,7 +2708,11 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
         }
         if (declaration.consume) jit.instance.syncCall(declaration.consume);
       }
-      if (!hookPending && board.jits.length === 1 && jit.cache.get(pc)?.batch === undefined) {
+      if (
+        !hookPending &&
+        board.jits.length === 1 &&
+        (!board.batchExecution || jit.cache.get(pc)?.batch === undefined)
+      ) {
         const outcome = runDirect(board, jit, hookReads);
         if (outcome === 'ran') return;
         if (outcome === 'assembly' || outcome === 'assembly-progressed') {
@@ -2643,9 +2725,9 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       const instructions = translateBlock(board, jit, pc);
       instruction = instructions[0]!;
     }
-    // Both a cache hit and a fresh translation reach the same admission. A decline keeps
-    // the ordinary instruction writer below untouched.
-    if (tryJitBatch(board, jit, pc, instruction)) return;
+    // Both a cache hit and a fresh translation reach the same admission. Unmarked entries
+    // never enter the helper, and a decline keeps the ordinary writer below untouched.
+    if (instruction.batch !== undefined && tryJitBatch(board, jit, pc, instruction)) return;
     jit.currentPc = pc;
     if (board.execution === 'throughput' && board.jits.length === 1)
       directStats(jit).directGenericInstructions++;

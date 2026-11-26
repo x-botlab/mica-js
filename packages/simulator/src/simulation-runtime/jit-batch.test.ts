@@ -1,5 +1,5 @@
 import { createDeviceBuilder, types, type DeviceBuilder } from '@mica-js/device-model';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createBoard, createDeviceLibrary } from '../runtime';
 import type { Instance } from '../runtime/instance';
 import { directJitStats, readJitBatchStats } from '../runtime/jit';
@@ -15,6 +15,23 @@ import type {
 const CODE_LENGTH = 16;
 const DATA_LENGTH = 256;
 const STEP = 10;
+const CHECKPOINT_EXPERIMENT = Symbol.for('mica-js.simulator/checkpoint-experiment');
+const previousDiagnostics = (globalThis as Record<PropertyKey, unknown>)[CHECKPOINT_EXPERIMENT];
+
+beforeAll(() => {
+  (globalThis as Record<PropertyKey, unknown>)[CHECKPOINT_EXPERIMENT] = {
+    ...(typeof previousDiagnostics === 'object' && previousDiagnostics !== null
+      ? previousDiagnostics
+      : {}),
+    diagnostics: true,
+  };
+});
+
+afterAll(() => {
+  if (previousDiagnostics === undefined)
+    delete (globalThis as Record<PropertyKey, unknown>)[CHECKPOINT_EXPERIMENT];
+  else (globalThis as Record<PropertyKey, unknown>)[CHECKPOINT_EXPERIMENT] = previousDiagnostics;
+});
 
 type Effect = 'advance' | 'fill' | 'copy';
 
@@ -36,6 +53,7 @@ interface HarnessOptions {
   readonly shareDirectBodies?: boolean;
   readonly code?: Uint8Array;
   readonly stopBefore?: string;
+  readonly pcInitial?: number;
 }
 
 interface Harness {
@@ -86,7 +104,7 @@ function createHarness(options: HarnessOptions): Harness {
   builder.memory({ name: 'code', length: CODE_LENGTH });
   builder.memory({ name: 'src', length: DATA_LENGTH });
   builder.memory({ name: 'dst', length: DATA_LENGTH });
-  builder.state({ name: 'pc', type: types.number, initial: 0 });
+  builder.state({ name: 'pc', type: types.number, initial: options.pcInitial ?? 0 });
   builder.state({ name: 'cursor', type: types.number, initial: 0 });
   builder.state({ name: 'stopAt', type: types.number, initial: 0 });
   builder.state({ name: 'busy', type: types.number, initial: 2 });
@@ -199,6 +217,23 @@ describe('JIT batch execution', () => {
     });
   }
 
+  it('only allocates batch counters while checkpoint diagnostics are enabled', () => {
+    const enabled = (globalThis as Record<PropertyKey, unknown>)[CHECKPOINT_EXPERIMENT];
+    (globalThis as Record<PropertyKey, unknown>)[CHECKPOINT_EXPERIMENT] = {
+      ...(typeof enabled === 'object' && enabled !== null ? enabled : {}),
+      diagnostics: false,
+    };
+    const harness = createHarness({ batch: true });
+    try {
+      harness.board.runUntil(2560);
+      expect(harness.instance.states.get('cursor')).toBe(DATA_LENGTH);
+      expect(readJitBatchStats(harness.jit)).toBeUndefined();
+    } finally {
+      harness.dispose();
+      (globalThis as Record<PropertyKey, unknown>)[CHECKPOINT_EXPERIMENT] = enabled;
+    }
+  });
+
   it('matches the reference at one step before, at, and after the batch deadline', () => {
     const enabledHarness = createHarness({ batch: true });
     const referenceHarness = createHarness({ batch: false });
@@ -257,42 +292,8 @@ describe('JIT batch execution', () => {
 });
 
 describe('JIT batch admission conflicts', () => {
-  it('keeps a marked head and every span covering it out of Direct', () => {
+  it('gives a valid same-head Direct loop precedence over a batch mark', () => {
     const translate: JitTranslate = (input, block) => {
-      if (input.pc === 0) {
-        block.instruction({ pc: 0, nextPc: 1 }, (body) => {
-          const cursor = body.readState('cursor', types.number);
-          body.if(body.lessThan(cursor, body.constant(types.number, DATA_LENGTH)), (step) => {
-            step.store8('dst', cursor, 42);
-            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
-            step.redirect(step.constant(types.number, 0), step.constant(types.number, STEP));
-          });
-        });
-        block.instruction({ pc: 1, nextPc: 1 }, (body) => body.stop());
-        input.markBatchLoop?.({ pc: 0 });
-        input.markDirectSpan?.(0, 2);
-      } else {
-        block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
-      }
-      return block.finish();
-    };
-    const { enabled, reference, enabledHarness, referenceHarness } = runPair(
-      { effect: 'fill', translate, directTiming: {} },
-      2560,
-    );
-    try {
-      expect(enabled).toEqual(reference);
-      const stats = readJitBatchStats(enabledHarness.jit)!;
-      expect(stats.commits).toBeGreaterThan(0);
-      const direct = directJitStats(enabledHarness.jit)!;
-      expect(direct.directSpans).toBe(0);
-      expect(direct.directSpanMarkRejected.notAdmitted).toBeGreaterThan(0);
-    } finally {
-      enabledHarness.dispose();
-      referenceHarness.dispose();
-    }
-
-    const loopOnly: JitTranslate = (input, block) => {
       if (input.pc === 0) {
         block.instruction({ pc: 0, nextPc: 1 }, (body) => {
           const cursor = body.readState('cursor', types.number);
@@ -309,16 +310,131 @@ describe('JIT batch admission conflicts', () => {
       }
       return block.finish();
     };
-    const loopPair = runPair({ effect: 'fill', translate: loopOnly, directTiming: {} }, 2560);
+    const { enabled, reference, enabledHarness, referenceHarness } = runPair(
+      { effect: 'fill', translate, directTiming: {} },
+      200,
+    );
     try {
-      expect(loopPair.enabled).toEqual(loopPair.reference);
-      expect(readJitBatchStats(loopPair.enabledHarness.jit)!.commits).toBeGreaterThan(0);
-      const direct = directJitStats(loopPair.enabledHarness.jit)!;
-      expect(direct.directLoops).toBe(0);
-      expect(direct.directLoopMarkRejected.notAdmitted).toBeGreaterThan(0);
+      expect(enabled).toEqual(reference);
+      expect(readJitBatchStats(enabledHarness.jit)).toBeUndefined();
+      expect(enabledHarness.jit.cache.get(0)?.batch).toBeUndefined();
+      const direct = directJitStats(enabledHarness.jit)!;
+      const baseline = directJitStats(referenceHarness.jit)!;
+      expect(direct.directLoopCandidates).toBeGreaterThan(0);
+      expect(direct.directLoopCandidates).toBe(baseline.directLoopCandidates);
+      expect(direct.directLoopMarkRejected).toEqual(baseline.directLoopMarkRejected);
+      expect(direct.directLoops).toBe(baseline.directLoops);
     } finally {
-      loopPair.enabledHarness.dispose();
-      loopPair.referenceHarness.dispose();
+      enabledHarness.dispose();
+      referenceHarness.dispose();
+    }
+  });
+
+  it('rejects a Direct span starting earlier that would cover an accepted batch head', () => {
+    const translate: JitTranslate = (input, block) => {
+      if (input.pc === 0) {
+        block.instruction({ pc: 0, nextPc: 1 }, (body) => {
+          body.writeState(
+            'prefix',
+            body.add(body.readState('prefix', types.number), body.constant(types.number, 1)),
+          );
+          body.elapse(5);
+        });
+        block.instruction({ pc: 1, nextPc: 2 }, (body) => {
+          const cursor = body.readState('cursor', types.number);
+          body.if(body.lessThan(cursor, body.constant(types.number, DATA_LENGTH)), (step) => {
+            step.store8('dst', cursor, 42);
+            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
+            step.redirect(step.constant(types.number, 1), step.constant(types.number, STEP));
+          });
+        });
+        block.instruction({ pc: 2, nextPc: 2 }, (body) => body.stop());
+        input.markBatchLoop?.({ pc: 1 });
+        // The reference board has no batch callback, so it also avoids the conflicting mark.
+        if (input.markBatchLoop) input.markDirectSpan?.(0, 2);
+      } else {
+        block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
+      }
+      return block.finish();
+    };
+    const { enabled, reference, enabledHarness, referenceHarness } = runPair(
+      {
+        effect: 'fill',
+        translate,
+        directTiming: {},
+        configure: (builder) => {
+          builder.state({ name: 'prefix', type: types.number, initial: 0 });
+        },
+      },
+      1200,
+    );
+    try {
+      expect(enabled).toEqual(reference);
+      const stats = readJitBatchStats(enabledHarness.jit)!;
+      expect(stats.commits).toBeGreaterThan(0);
+      expect(enabledHarness.jit.cache.get(1)?.batch).toBeDefined();
+      const direct = directJitStats(enabledHarness.jit)!;
+      expect(direct.directSpans).toBe(0);
+      expect(direct.directSpanCandidates).toBe(0);
+      expect(direct.directSpanMarkRejected.conflict).toBe(1);
+    } finally {
+      enabledHarness.dispose();
+      referenceHarness.dispose();
+    }
+  });
+
+  it('keeps a span when its only interior head loses to same-head Direct timing', () => {
+    const translate: JitTranslate = (input, block) => {
+      if (input.pc === 0) {
+        block.instruction({ pc: 0, nextPc: 1 }, (body) => {
+          body.writeState(
+            'prefix',
+            body.add(body.readState('prefix', types.number), body.constant(types.number, 1)),
+          );
+          body.elapse(5);
+        });
+        block.instruction({ pc: 1, nextPc: 2 }, (body) => {
+          const cursor = body.readState('cursor', types.number);
+          body.if(body.lessThan(cursor, body.constant(types.number, DATA_LENGTH)), (step) => {
+            step.store8('dst', cursor, 42);
+            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
+            step.redirect(step.constant(types.number, 1), step.constant(types.number, STEP));
+          });
+        });
+        block.instruction({ pc: 2, nextPc: 2 }, (body) => body.stop());
+        input.markBatchLoop?.({ pc: 1 });
+        input.markDirectSpan?.(0, 2);
+        input.markDirectSpan?.(1, 2);
+      } else {
+        block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
+      }
+      return block.finish();
+    };
+    const { enabled, reference, enabledHarness, referenceHarness } = runPair(
+      {
+        effect: 'fill',
+        translate,
+        directTiming: {},
+        configure: (builder) => {
+          builder.state({ name: 'prefix', type: types.number, initial: 0 });
+        },
+      },
+      1200,
+    );
+    try {
+      expect(enabled).toEqual(reference);
+      expect(readJitBatchStats(enabledHarness.jit)).toBeUndefined();
+      expect(enabledHarness.jit.cache.get(1)?.batch).toBeUndefined();
+      const direct = directJitStats(enabledHarness.jit)!;
+      const baseline = directJitStats(referenceHarness.jit)!;
+      expect(direct.directSpanCandidates).toBe(2);
+      expect(direct.directSpanCandidates).toBe(baseline.directSpanCandidates);
+      expect(direct.directSpanMarkRejected.conflict).toBe(0);
+      expect(direct.directSpanMarkRejected).toEqual(baseline.directSpanMarkRejected);
+      expect(direct.directSpans).toBe(baseline.directSpans);
+    } finally {
+      enabledHarness.dispose();
+      referenceHarness.dispose();
     }
   });
 
@@ -452,6 +568,40 @@ describe('JIT batch translation invalidation', () => {
     }
   });
 
+  it('accepts a finite fractional PC that lies inside a bound code region', () => {
+    const translate: JitTranslate = (input, block) => {
+      if (input.pc === 0.5) {
+        block.instruction({ pc: 0.5, nextPc: 1 }, (body) => {
+          const cursor = body.readState('cursor', types.number);
+          body.if(body.lessThan(cursor, body.constant(types.number, 64)), (step) => {
+            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
+            step.redirect(step.constant(types.number, 0.5), step.constant(types.number, STEP));
+          });
+        });
+        input.markBatchLoop?.({ pc: 0.5 });
+      } else {
+        block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
+      }
+      return block.finish();
+    };
+    const enabledHarness = createHarness({ batch: true, translate, pcInitial: 0.5 });
+    const referenceHarness = createHarness({ batch: false, translate, pcInitial: 0.5 });
+    try {
+      enabledHarness.board.runUntil(180);
+      referenceHarness.board.runUntil(180);
+      expect(enabledHarness.instance.states.get('pc')).toBe(0.5);
+      expect(referenceHarness.instance.states.get('pc')).toBe(0.5);
+      expect(enabledHarness.instance.states.get('cursor')).toBe(
+        referenceHarness.instance.states.get('cursor'),
+      );
+      expect(enabledHarness.board.time).toBe(referenceHarness.board.time);
+      expect(readJitBatchStats(enabledHarness.jit)!.commits).toBeGreaterThan(0);
+    } finally {
+      enabledHarness.dispose();
+      referenceHarness.dispose();
+    }
+  });
+
   it('drops malformed, duplicated, and unbound marks without failing valid IR', () => {
     const malformed: JitTranslate = (input, block) => {
       if (input.pc === 0) {
@@ -490,6 +640,42 @@ describe('JIT batch translation invalidation', () => {
       expect(enabled).toEqual(reference);
       expect(readJitBatchStats(enabledHarness.jit)).toBeUndefined();
       expect(enabled.cursor).toBe(32);
+    } finally {
+      enabledHarness.dispose();
+      referenceHarness.dispose();
+    }
+  });
+
+  it('lets a malformed same-PC mark cancel a valid duplicate', () => {
+    const translate: JitTranslate = (input, block) => {
+      if (input.pc === 0) {
+        block.instruction({ pc: 0, nextPc: 1 }, (body) => {
+          const cursor = body.readState('cursor', types.number);
+          body.if(body.lessThan(cursor, body.constant(types.number, 32)), (step) => {
+            step.store8('dst', cursor, 7);
+            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
+            step.redirect(step.constant(types.number, 0), step.constant(types.number, STEP));
+          });
+        });
+        const mark = input.markBatchLoop;
+        if (mark) {
+          mark({ pc: 0, stopBefore: 3 } as never);
+          mark({ pc: 0 });
+        }
+      } else {
+        block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
+      }
+      return block.finish();
+    };
+    const { enabled, reference, enabledHarness, referenceHarness } = runPair(
+      { effect: 'fill', translate },
+      320,
+    );
+    try {
+      expect(enabled).toEqual(reference);
+      expect(enabled.cursor).toBe(32);
+      expect(readJitBatchStats(enabledHarness.jit)).toBeUndefined();
+      expect(enabledHarness.jit.cache.get(0)?.batch).toBeUndefined();
     } finally {
       enabledHarness.dispose();
       referenceHarness.dispose();
@@ -554,6 +740,7 @@ describe('JIT batch falls back for conflicting execution modes', () => {
     try {
       expect(polling.enabled).toEqual(polling.reference);
       expect(readJitBatchStats(polling.enabledHarness.jit)).toBeUndefined();
+      expect(polling.enabledHarness.jit.cache.get(0)?.batch).toBeUndefined();
     } finally {
       polling.enabledHarness.dispose();
       polling.referenceHarness.dispose();
@@ -563,6 +750,7 @@ describe('JIT batch falls back for conflicting execution modes', () => {
     try {
       expect(busy.enabled).toEqual(busy.reference);
       expect(readJitBatchStats(busy.enabledHarness.jit)).toBeUndefined();
+      expect(busy.enabledHarness.jit.cache.get(0)?.batch).toBeUndefined();
     } finally {
       busy.enabledHarness.dispose();
       busy.referenceHarness.dispose();
