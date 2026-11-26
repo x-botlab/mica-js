@@ -20,6 +20,7 @@ import type {
   JitCodeChange,
   JitCodeRegion,
   JitDelay,
+  JitLoopCandidate,
   JitOptions,
   JitPolling,
 } from '../types';
@@ -124,7 +125,6 @@ export interface JitInstruction {
   readonly pc: number;
   readonly nextPc: number;
   readonly body: RegionIR;
-  readonly execute: CompiledBody;
   readonly polling: boolean;
   /** 该 instruction 的代码 region；服务 PC 回退主 code 时为 undefined。 */
   readonly codeRegion: JitCodeRegion | undefined;
@@ -132,6 +132,12 @@ export interface JitInstruction {
   readonly codeVersion: number;
   /** 通过运行时校验的 Direct 指令体共享候选。 */
   readonly share?: DirectJitShareCandidate;
+  /** 通过运行时校验的 Direct 合块候选。 */
+  readonly span?: {
+    readonly pcs: readonly number[];
+  };
+  /** 通过运行时校验的 Direct 折叠循环候选。 */
+  readonly loop?: JitLoopCandidate;
 }
 /** Validated polling declaration minus its PC key. */
 export type JitPollingBinding = Omit<JitPolling, 'pc'>;

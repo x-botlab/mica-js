@@ -13,6 +13,18 @@ import type { ComputationIR, DeviceIR, RegionIR } from '@mica-js/device-model';
 import type { Instance } from './instance';
 
 const compiledBodies = new WeakMap<RegionIR, CompiledBody>();
+/**
+ * Deterministic generic-body diagnostics. Translation no longer compiles a body eagerly, so a
+ * Direct-resident workload must leave `compiled` unchanged.
+ */
+const genericBodies = { compiled: 0, reused: 0 };
+export interface GenericBodyStats {
+  readonly compiled: number;
+  readonly reused: number;
+}
+export function genericBodyStats(): GenericBodyStats {
+  return genericBodies;
+}
 const resumablePrograms = new WeakMap<RegionIR, ResumableProgram | null>();
 const compiledComputations = new WeakMap<ComputationIR, (host: ExecutionHost) => unknown>();
 /**
@@ -33,7 +45,8 @@ export function body(region: RegionIR): CompiledBody {
   if (!result) {
     result = compileBody(region);
     compiledBodies.set(region, result);
-  }
+    genericBodies.compiled++;
+  } else genericBodies.reused++;
   return result;
 }
 /**
