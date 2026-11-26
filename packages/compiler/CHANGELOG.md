@@ -1,5 +1,11 @@
 # @mica-js/compiler
 
+## 0.9.0
+
+### Minor Changes
+
+- 7fb9015: Add incremental Direct JIT sessions with a fixed dispatcher, per-batch route installation and resident shard reuse. The simulator now translates and dispatches Direct code on demand instead of rebuilding a whole program, reports route/shard/dispatch diagnostics, and can opt into validated cross-window instruction-body sharing through `shareDirectBodies` and `markDirectBodyShareable`.
+
 ## 0.8.0
 
 ### Minor Changes
