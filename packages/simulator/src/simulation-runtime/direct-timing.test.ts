@@ -1,4 +1,4 @@
-import { createDeviceBuilder, types } from '@mica-js/device-model';
+import { createDeviceBuilder, types, type JitInstructionBuilder } from '@mica-js/device-model';
 import { describe, expect, it, vi } from 'vitest';
 import { createBoard, createDeviceLibrary } from '../runtime';
 import { genericBodyStats } from '../runtime/execution';
@@ -355,6 +355,181 @@ describe('direct span timing', () => {
       expect(stats.directSpanRejected).toBeGreaterThan(0);
     } finally {
       hooked.dispose();
+    }
+  });
+});
+
+function tickTail(body: JitInstructionBuilder, duration: number, tick: boolean) {
+  const elapsed = body.readState('clockPs', types.number);
+  const deadline = body.readState('serviceDeadline', types.number);
+  const zero = body.constant(types.number, 0);
+  const active = body.notEqual(types.number, deadline, zero);
+  const pending = body.add(elapsed, body.constant(types.number, duration));
+  const due = body.and(active, (test) => test.greaterThanOrEqual(pending, deadline));
+  const blocked = body.callPureValue('blocked', types.bool);
+  const slow = body.or(blocked, () => due);
+  body.if(
+    slow,
+    (tail) => {
+      tail.writeState('clockPs', pending);
+      tail.writeState('observed', tail.add(tail.readState('observed', types.number), 1));
+    },
+    (tail) => {
+      tail.writeState(
+        'clockPs',
+        tick
+          ? tail.select(
+              types.number,
+              active,
+              () => pending,
+              () => zero,
+            )
+          : pending,
+      );
+    },
+  );
+}
+
+describe('guarded Direct instruction tails in throughput', () => {
+  function run(options: {
+    mark: boolean;
+    deadline: number;
+    targets: readonly number[];
+    eventAt?: number;
+    changeGuard?: boolean;
+  }) {
+    const harness = createHarness({
+      ...(options.mark ? { directTiming: { ...service(), blocked: 'blocked' } } : {}),
+      configure: (builder) => {
+        builder.pureFn({ name: 'blocked', params: [], returns: types.bool }, (body) =>
+          body.returnValue(body.readState('blockedFlag', types.bool)),
+        );
+        if (options.eventAt !== undefined) {
+          const eventAt = options.eventAt;
+          builder.start((body) => {
+            body.wait(body.constant(types.number, eventAt));
+            body.writeState('blockedFlag', body.constant(types.bool, true));
+          });
+        }
+      },
+      translate: (input, block) => {
+        if (input.pc === 0) {
+          block.instruction({ pc: 0, nextPc: 1 }, (body) => {
+            if (options.changeGuard)
+              body.writeState('blockedFlag', body.constant(types.bool, true));
+            body.elapse(5);
+            tickTail(body, 5, true);
+          });
+          block.instruction({ pc: 1, nextPc: 2 }, (body) => {
+            body.elapse(5);
+            tickTail(body, 5, false);
+          });
+          block.instruction({ pc: 2, nextPc: 3 }, (body) => {
+            body.writeState('terminal', body.readState('clockPs', types.number));
+            body.elapse(7);
+            body.writeState('prefix', body.add(body.readState('prefix', types.number), 1));
+          });
+          input.markDirectSpan?.(0, 3);
+        } else {
+          block.instruction({ pc: 3, nextPc: 3 }, (body) => body.stop());
+        }
+        return block.finish();
+      },
+    });
+    const { states } = harness.instance;
+    states.set('terminal', -1);
+    states.set('clockPs', 4);
+    states.set('serviceDeadline', options.deadline);
+    try {
+      const samples = options.targets.map((target) => {
+        harness.board.runUntil(target);
+        return {
+          terminal: states.get('terminal'),
+          elapsed: states.get('clockPs'),
+          slowTails: states.get('observed'),
+          terminalTails: states.get('prefix'),
+          time: harness.board.time,
+        };
+      });
+      return { samples, spanRuns: directJitStats(harness.jit)!.directSpanRuns };
+    } finally {
+      harness.dispose();
+    }
+  }
+
+  it('gives the terminal the elapsed from both prefixes and resumes its suffix once', () => {
+    for (const [deadline, expectedElapsed] of [
+      [0, 5],
+      [100, 14],
+    ]) {
+      const options = { deadline: deadline!, targets: [11, 17, 18, 21] };
+      const marked = run({ ...options, mark: true });
+      expect(marked.samples).toEqual(run({ ...options, mark: false }).samples);
+      expect(marked.spanRuns).toBe(1);
+      expect(marked.samples.map(({ terminal }) => terminal)).toEqual(
+        Array(4).fill(expectedElapsed),
+      );
+      expect(marked.samples.map(({ terminalTails }) => terminalTails)).toEqual([0, 0, 1, 1]);
+    }
+  });
+
+  it('keeps host, service and same-time model events on the ordinary path', () => {
+    const onHostBoundary = run({ mark: true, deadline: 100, targets: [9, 10, 11] });
+    expect(onHostBoundary.spanRuns).toBe(0);
+    expect(onHostBoundary.samples.map(({ terminal }) => terminal)).toEqual([-1, -1, 14]);
+    for (const options of [
+      { deadline: 14, targets: [11, 18] },
+      { deadline: 100, eventAt: 10, targets: [11, 18] },
+      { deadline: 100, changeGuard: true, targets: [11, 18] },
+    ]) {
+      const marked = run({ ...options, mark: true });
+      expect(marked.samples).toEqual(run({ ...options, mark: false }).samples);
+      expect(marked.spanRuns).toBe(0);
+      expect(marked.samples[0]!.slowTails).toBeGreaterThan(0);
+    }
+  });
+
+  it('folds guarded loop tails up to service equality and clears idle time as specified', () => {
+    for (const [deadline, targets, expectedElapsed, expectedSlowTails, expectedRounds] of [
+      [54, [50, 51], [44, 54], [0, 1], 4],
+      [0, [55, 60, 61], [0, 0, 0], [0, 0, 0], 5],
+    ] as const) {
+      const runLoop = (mark: boolean) => {
+        const harness = createHarness({
+          ...(mark ? { directTiming: { ...service(), blocked: 'blocked' } } : {}),
+          configure: (builder) => {
+            builder.pureFn({ name: 'blocked', params: [], returns: types.bool }, (body) =>
+              body.returnValue(body.readState('blockedFlag', types.bool)),
+            );
+          },
+          translate(input, block) {
+            block.instruction({ pc: 0, nextPc: 0 }, (body) => {
+              body.writeState('pc', body.constant(types.number, 0));
+              body.elapse(10);
+              tickTail(body, 10, true);
+            });
+            input.markDirectLoop?.(0, { kind: 'spin' });
+            return block.finish();
+          },
+        });
+        const { states } = harness.instance;
+        states.set('clockPs', 4);
+        states.set('serviceDeadline', deadline);
+        try {
+          const samples = targets.map((target) => {
+            harness.board.runUntil(target);
+            return [states.get('clockPs'), states.get('observed')];
+          });
+          return { samples, loopRounds: directJitStats(harness.jit)!.directLoopRounds };
+        } finally {
+          harness.dispose();
+        }
+      };
+      const marked = runLoop(true);
+      expect(marked.samples).toEqual(runLoop(false).samples);
+      expect(marked.samples.map(([elapsed]) => elapsed)).toEqual(expectedElapsed);
+      expect(marked.samples.map(([, slowTails]) => slowTails)).toEqual(expectedSlowTails);
+      expect(marked.loopRounds).toBe(expectedRounds);
     }
   });
 });
