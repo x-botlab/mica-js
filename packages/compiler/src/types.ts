@@ -327,6 +327,8 @@ export interface DirectJitFrame {
   locals: unknown[];
   /** Complete a pending old instruction, then exit before starting another. */
   stopAfterInstruction?: boolean;
+  /** Single entry admitted by the host after its batch attempt declined. */
+  batchFallbackPc?: number | undefined;
   /** Publish host effects at the next nonzero elapse or instruction end before continuing. */
   publishPending?: boolean;
   /**
@@ -417,6 +419,8 @@ export interface DirectJitInstruction {
   readonly pc: number;
   readonly nextPc: number;
   readonly body: RegionIR;
+  /** Return to the host before entering unless it admitted this specific fallback. */
+  readonly requiresBatchFallback?: boolean | undefined;
   /** Explicit opt-in to function-body sharing; unmarked entries always stay independent. */
   readonly share?: DirectJitShareCandidate;
   /** Marked contiguous instructions fused when every prefix member is provably pure. */
