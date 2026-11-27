@@ -1,5 +1,12 @@
 # @mica-js/compiler
 
+## 0.11.1
+
+### Patch Changes
+
+- 4cb01cb: Support proven Direct JIT service tails in fixed-duration span prefixes and self-jump loops. The compiler checks that the bound blocking guard remains stable and applies each prefix's elapsed update before the terminal instruction. Byte-counter folding also recognizes equivalent decrements masked again by the byte store.
+- cf712aa: Fix Direct JIT loop folding so completed rounds update the service accumulator according to the verified instruction tail, including when the accumulator starts at zero or no service deadline is active. Preserve the accumulator for empty tails and execute unproven tails one instruction at a time.
+
 ## 0.11.0
 
 ### Minor Changes
