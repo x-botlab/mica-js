@@ -5129,6 +5129,133 @@ test('spin folding stops one picosecond before the deadline with a normal bounda
   assert.equal(session.stats().loopRounds, 10);
 });
 
+function timedSpinInstruction(tail) {
+  const b = builder();
+  b.write('pc', b.constant(0));
+  b.delay(10);
+  tail?.(b);
+  return b.instruction(0, 0);
+}
+
+test('spin folding accounts for each completed tail across deadlines and resumes', () => {
+  const instruction = timedSpinInstruction((b) => {
+    b.write('offset', b.binary('add', b.read('offset'), b.constant(10)));
+  });
+  const settings = optimizedBinding({ directTiming: { elapsed: 4, deadline: 5 } });
+  const ordinary = sessionWith([instruction], settings);
+  const marked = sessionWith([loopMarked(instruction, { kind: 'spin' })], settings);
+  assert.equal(marked.stats().loopsInstalled, 1);
+
+  // Each step gives the deadline, expected accumulator, and cumulative folded rounds.
+  const cases = [
+    { name: 'zero elapsed', elapsed: 0, service: 100, steps: [[55, 50, 5]] },
+    { name: 'nonzero elapsed', elapsed: 5, service: 100, steps: [[55, 55, 5]] },
+    { name: 'zero elapsed without service', elapsed: 0, service: 0, steps: [[55, 50, 5]] },
+    { name: 'nonzero elapsed without service', elapsed: 5, service: 0, steps: [[55, 55, 5]] },
+    { name: 'event-only service', elapsed: 0, service: 1e15, steps: [[55, 50, 5]] },
+    { name: 'just settled', time: 100, elapsed: 0, service: 100, steps: [[155, 50, 5]] },
+    { name: 'deadline equals service', elapsed: 0, service: 100, steps: [[100, 90, 9]] },
+    {
+      name: 'deadline equals service with elapsed',
+      elapsed: 5,
+      service: 100,
+      steps: [[95, 95, 9]],
+    },
+    { name: 'deadline equals start', elapsed: 5, service: 100, steps: [[0, 5, 0]] },
+    {
+      name: 'resume then fold again',
+      elapsed: 0,
+      service: 1000,
+      steps: [
+        [55, 50, 5],
+        [155, 150, 14],
+      ],
+    },
+    {
+      name: 'deadline equals due with elapsed',
+      elapsed: 5,
+      service: 1000,
+      steps: [
+        [55, 55, 5],
+        [60, 55, 5],
+      ],
+    },
+    {
+      name: 'deadline equals due before resuming',
+      elapsed: 0,
+      service: 1000,
+      steps: [
+        [55, 50, 5],
+        [60, 50, 5],
+        [61, 60, 5],
+      ],
+    },
+  ];
+  for (const { name, time = 0, elapsed, service, steps } of cases) {
+    const states = [0, 0, 0, false, elapsed, service];
+    const reference = bankFrame(ordinary, states, [[0]], true);
+    const folded = bankFrame(marked, states, [[0]], true);
+    reference.time = reference.due = folded.time = folded.due = time;
+    for (const [deadline, expectedElapsed, expectedRounds] of steps) {
+      const step = `${name} at ${deadline} ps`;
+      assert.equal(ordinary.run(reference, deadline), 'deadline', step);
+      assert.equal(marked.run(folded, deadline), 'deadline', step);
+      assert.equal(folded.states[4], expectedElapsed, step);
+      assert.equal(folded.directMetrics.loopRounds, expectedRounds, step);
+      assert.equal(reference.directMetrics.loopRounds, 0, step);
+      sameObservable(folded, reference);
+    }
+  }
+});
+
+test('spin folding only combines time writes proven equivalent to the ordinary tail', () => {
+  const settings = optimizedBinding({ directTiming: { elapsed: 4, deadline: 5 } });
+  for (const [name, tail, installed, expectedElapsed] of [
+    ['empty tail', undefined, 1, 5],
+    ['constant write', (b) => b.write('offset', b.constant(0)), 0, 0],
+    [
+      'different increment',
+      (b) => b.write('offset', b.binary('add', b.read('offset'), b.constant(1))),
+      0,
+      10,
+    ],
+  ]) {
+    const instruction = timedSpinInstruction(tail);
+    const ordinary = sessionWith([instruction], settings);
+    const marked = sessionWith([loopMarked(instruction, { kind: 'spin' })], settings);
+    assert.equal(marked.stats().loopsInstalled, installed, name);
+    assert.equal(marked.stats().loopsRejected, 1 - installed, name);
+
+    const states = [0, 0, 0, false, 5, 100];
+    const reference = bankFrame(ordinary, states, [[0]], true);
+    const folded = bankFrame(marked, states, [[0]], true);
+    assert.equal(ordinary.run(reference, 55), 'deadline', name);
+    assert.equal(marked.run(folded, 55), 'deadline', name);
+    assert.equal(folded.states[4], expectedElapsed, name);
+    assert.equal(folded.directMetrics.loopRounds, installed * 5, name);
+    sameObservable(folded, reference);
+  }
+});
+
+test('spin folding leaves observed accumulator writes on the ordinary path from zero', () => {
+  const instruction = timedSpinInstruction((b) => {
+    b.write('offset', b.binary('add', b.constant(10), b.read('offset')));
+  });
+  const settings = optimizedBinding({ directTiming: { elapsed: 4, deadline: 5 } });
+  const ordinary = sessionWith([instruction], settings);
+  const marked = sessionWith([loopMarked(instruction, { kind: 'spin' })], settings);
+  assert.equal(marked.stats().loopsInstalled, 1);
+
+  const states = [0, 0, 0, false, 0, 100];
+  const reference = bankFrame(ordinary, states, [[0]], true);
+  const folded = bankFrame(marked, states, [[0]], true);
+  reference.blockedStates = folded.blockedStates = [1 << 4];
+  assert.equal(marked.run(folded, 55), ordinary.run(reference, 55));
+  assert.equal(folded.states[4], 10);
+  assert.equal(folded.directMetrics.loopRounds, 0);
+  sameObservable(folded, reference);
+});
+
 /** Zero-argument pure bool guard reading the `flag` state. */
 function blockedGuard() {
   return {

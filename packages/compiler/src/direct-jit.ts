@@ -4001,6 +4001,9 @@ interface PreparedTiming {
   readonly blocked: string | undefined;
 }
 
+type LoopTail =
+  { readonly kind: 'preserve' } | { readonly kind: 'accumulate'; readonly accumulator: number };
+
 /** A proven self-jump; the session turns it into an entry guard wrapper. */
 interface LoopPlan {
   readonly kind: 'spin' | 'decrement8';
@@ -4009,6 +4012,7 @@ interface LoopPlan {
   readonly memoryIndex: number | undefined;
   readonly addressExpression: string | undefined;
   readonly timing: PreparedTiming | undefined;
+  readonly tail: LoopTail;
 }
 
 /** A proven fused span; `prefix` excludes the terminal member. */
@@ -4190,6 +4194,7 @@ function loopFoldLines(plan: LoopPlan): string[] {
   const lines: string[] = [];
   const timing = plan.timing;
   const decrement = plan.kind === 'decrement8';
+  const accumulator = plan.tail.kind === 'accumulate' ? plan.tail.accumulator : undefined;
   const close: string[] = [];
   if (timing !== undefined) {
     lines.push(
@@ -4240,11 +4245,11 @@ function loopFoldLines(plan: LoopPlan): string[] {
     const index = plan.memoryIndex!;
     eligibility.push(`!(BM[${index >>> 5}] & ${(1 << (index & 31)) >>> 0})`);
   }
-  if (timing !== undefined) {
-    const index = timing.elapsed;
+  if (accumulator !== undefined) {
     eligibility.push(
-      `(!(foldElapsed > 0 && foldElapsed < foldDeadline) || Number.isSafeInteger(foldElapsed + ${delta}) && foldElapsed + ${delta} <= ${MAX_TIME})`,
-      `(!(foldElapsed > 0 && foldElapsed < foldDeadline) || !(BS[${index >>> 5}] & ${(1 << (index & 31)) >>> 0}))`,
+      `Number.isSafeInteger(foldElapsed + ${delta})`,
+      `foldElapsed + ${delta} <= ${MAX_TIME}`,
+      `!(BS[${accumulator >>> 5}] & ${(1 << (accumulator & 31)) >>> 0})`,
     );
   }
   lines.push(`if (${eligibility.join(' && ')}) {`, `const foldDelta = ${delta};`);
@@ -4260,14 +4265,8 @@ function loopFoldLines(plan: LoopPlan): string[] {
     'F.due = F.time;',
     `if (F.time > ${MAX_TIME}) throw new RangeError("Time out of range");`,
   );
-  if (timing !== undefined) {
-    const index = timing.elapsed;
-    lines.push(
-      'if (foldElapsed > 0 && foldElapsed < foldDeadline) {',
-      `S[${index}] = foldElapsed + foldDelta;`,
-      `SD[${index >>> 5}] |= ${(1 << (index & 31)) >>> 0};`,
-      '}',
-    );
+  if (accumulator !== undefined) {
+    lines.push(`S[${accumulator}] = foldElapsed + foldDelta;`, dirty('SD', accumulator));
   }
   lines.push(
     'if (F.directMetrics) F.directMetrics.loopRounds += rounds;',
@@ -4401,34 +4400,45 @@ function spanPrefixProof(
   return elapsed === 1;
 }
 
-/** The tail after a loop's single elapse may only adjust the device timing accumulator. */
+/** Prove the executed suffix preserves elapsed or adds exactly one round's duration. */
 function timingTailProof(
   operations: readonly OperationIR[],
   timing: PreparedTiming | undefined,
-  states: ReadonlyMap<string, number>,
-): boolean {
-  if (!operations.length) return true;
-  const tailKinds = new Set<OperationIR['kind']>([
-    'constant',
-    'read',
-    'unary',
-    'binary',
-    'numeric',
-    'optional',
-    'isNone',
-    'nonNull',
-    'local',
-    'localRead',
-    'localWrite',
-    'write',
-  ]);
-  for (const operation of operations) {
-    if (!tailKinds.has(operation.kind)) return false;
-    if (operation.kind === 'write') {
-      if (timing === undefined || states.get(operation.name) !== timing.elapsed) return false;
-    }
-  }
-  return true;
+  binding: DirectJitBinding,
+  constants: ReadonlyMap<number, Primitive>,
+  duration: number,
+): LoopTail | undefined {
+  if (operations.length === 0) return { kind: 'preserve' };
+  if (
+    timing === undefined ||
+    timing.elapsed === timing.deadline ||
+    timing.elapsed === binding.pc.index
+  )
+    return undefined;
+
+  const [read, add, write, extra] = operations.filter(
+    (operation) => operation.kind !== 'constant' || operation.constant.kind !== 'number',
+  );
+  if (
+    extra !== undefined ||
+    read?.kind !== 'read' ||
+    read.resource !== 'state' ||
+    read.type.kind !== 'number' ||
+    binding.states.get(read.name) !== timing.elapsed ||
+    add?.kind !== 'binary' ||
+    add.operator !== 'add' ||
+    add.type.kind !== 'number' ||
+    write?.kind !== 'write' ||
+    write.value !== add.result ||
+    binding.states.get(write.name) !== timing.elapsed
+  )
+    return undefined;
+  if (
+    (add.left === read.result && constantNumber(constants, add.right) === duration) ||
+    (add.right === read.result && constantNumber(constants, add.left) === duration)
+  )
+    return { kind: 'accumulate', accumulator: timing.elapsed };
+  return undefined;
 }
 
 interface AddressParts {
@@ -4646,7 +4656,8 @@ function sameOptimizationPlan(left: LoopPlan | SpanPlan, right: LoopPlan | SpanP
     a.duration === b.duration &&
     a.memoryIndex === b.memoryIndex &&
     a.addressExpression === b.addressExpression &&
-    a.timing === b.timing
+    a.timing === b.timing &&
+    a.tail.kind === b.tail.kind
   );
 }
 
@@ -4754,7 +4765,6 @@ function spinProof(
   });
   if (terminator < 0) return undefined;
   const prefix = body.operations.slice(0, terminator);
-  const tail = body.operations.slice(terminator + 1);
   const terminatorOperation = body.operations[terminator]!;
   const pure = new Set<OperationIR['kind']>([
     'constant',
@@ -4791,7 +4801,14 @@ function spinProof(
     sawTarget = true;
   }
   if (!sawTarget || duration === undefined) return undefined;
-  if (!timingTailProof(tail, timing, binding.states)) return undefined;
+  const tail = timingTailProof(
+    body.operations.slice(terminator + 1),
+    timing,
+    binding,
+    constants,
+    duration,
+  );
+  if (tail === undefined) return undefined;
   return {
     kind: 'spin',
     instruction,
@@ -4799,6 +4816,7 @@ function spinProof(
     memoryIndex: undefined,
     addressExpression: undefined,
     timing,
+    tail,
   };
 }
 
@@ -4847,7 +4865,6 @@ function decrementProof(
   const duration = constantNumber(constants, elapse.duration);
   if (duration === undefined || duration <= 0) return undefined;
   const prefix = body.operations.slice(0, elapseIndex);
-  const tail = body.operations.slice(elapseIndex + 1);
   let store = -1;
   prefix.forEach((operation, index) => {
     if (operation.kind === 'store8') store = index;
@@ -4943,7 +4960,14 @@ function decrementProof(
     if (!pure.has(operation.kind)) return undefined;
   }
   if (!conditional) return undefined;
-  if (!timingTailProof(tail, timing, binding.states)) return undefined;
+  const tail = timingTailProof(
+    body.operations.slice(elapseIndex + 1),
+    timing,
+    binding,
+    constants,
+    duration,
+  );
+  if (tail === undefined) return undefined;
   return {
     kind: 'decrement8',
     instruction,
@@ -4954,6 +4978,7 @@ function decrementProof(
         ? String(address.offset)
         : `(((M[${binding.memories.get(address.memory!)}][${address.offset}] & ${address.mask}) | ${address.bits}))`,
     timing,
+    tail,
   };
 }
 
