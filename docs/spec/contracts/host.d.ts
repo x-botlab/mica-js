@@ -171,6 +171,12 @@ export interface InstructionHook {
   readonly when: string;
   readonly call: string;
 }
+export interface JitPollingCheckpoint {
+  readonly at: number;
+  readonly nextPc: number;
+  readonly resumePc?: number;
+  readonly call?: string;
+}
 export interface JitPolling {
   readonly pc: number;
   readonly predicate: string;
@@ -180,6 +186,7 @@ export interface JitPolling {
   readonly wait?: {
     readonly delay: string;
     readonly advance: string;
+    readonly checkpoints?: readonly JitPollingCheckpoint[];
   };
 }
 /** 忙等延时环声明；`pending` 用于按累加器计时的外设。 */

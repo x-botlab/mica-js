@@ -151,6 +151,33 @@ node packages/simulator/bench/batch-execution-browser.mjs --controls-only \
 
 电气基准独立测量缓存复用、空脏引脚提示、参考变化、分量合并/拆分及共享电源下的支路隔离，并报告分解和缓存计数。额外的非计时 instrumentation 在 `cache_verification` 中记录拓扑、计算块、物理分组构建和拓扑恢复、对角分解次数，断言电阻更新不重建拓扑，以及参考切换恢复、32/33 节点路径切换、连接变化、失败重试和缓存发布的正确性；它不是公开 SDK 统计。`reference_assembly` 将专用组装与通用组装逐值对照，覆盖形状守卫、跨节点代码复用、8 槽上限、128 个独立区域及非有限结果/分解失败的原子重试。追加 `--verify-only` 可只运行这些断言，不采集性能。共享电源场景断言物理分量始终为 1，改变一条链时仅重新分解该链，另一条链命中缓存；分解与缓存计数以计算块为单位。测量不含 DDL、装配；方程程序按需生成，首次编译成本由首次运行或预热承担。编译器基准报告冷编译、稳态吞吐和生成代码大小。数值取决于 Node.js 版本、机器与工作负载，不作为通用性能保证。
 
+### 可观察停驻和宽字外设合批
+
+[差分夹具](bench/observable-batch.test.mjs)核对三块轮询前缀、RGB565 显示写入及 WFI 期间的 SRAM DMA。它覆盖推进停点、代码换代、观察者、服务入队与开始、中断返回 PC，以及同刻和晚 1 ps 的跨实例源区改写。
+
+使用 Compiler、Simulator 和 SDK 的发布入口构建后，运行同一组端到端基准。
+
+```sh
+pnpm --filter @mica-js/compiler --filter @mica-js/simulator --filter @mica-js/sdk -r build
+node packages/simulator/bench/observable-batch.mjs
+node packages/simulator/bench/observable-batch.mjs --browser
+node packages/simulator/bench/observable-batch.mjs --memory=Dma:enabled
+node packages/simulator/bench/observable-batch.mjs --browser --memory=Dma:enabled
+```
+
+计时默认每组 8,192 项或轮、7 轮预热和 24 次串行交错采样。端到端时长包括建板、推进、公开 `sync` 和销毁。普通路径开销是同一构建取消候选后开启开关相对于关闭开关的时长差。计数来自独立差分轮。峰值 RSS 来自单独启动进程的 `--memory=<Lcd|Dma|Parking>:<disabled|enabled>` 轮，包含进程启动和运行环境。Chromium 的 Linux 读数使用 GNU time 的单进程最大 RSS。
+
+| 发布构建               | 合成负载 | 端到端中位数，关 → 开（ms） | 峰值 RSS，关 → 开（MiB） | 普通路径开销 |
+| ---------------------- | -------- | --------------------------: | -----------------------: | -----------: |
+| Node 24.20.0           | RGB565   |              11.836 → 2.322 |            124.0 → 119.6 |        +1.2% |
+| Node 24.20.0           | SRAM DMA |               1.388 → 0.161 |              86.5 → 72.1 |        +0.5% |
+| Node 24.20.0           | 三块轮询 |             39.158 → 25.356 |              96.2 → 92.2 |        +1.9% |
+| Chromium 153.0.8010.12 | RGB565   |               9.360 → 1.658 |              92.1 → 91.2 |        +0.8% |
+| Chromium 153.0.8010.12 | SRAM DMA |               1.445 → 0.108 |              91.8 → 91.9 |        +0.2% |
+| Chromium 153.0.8010.12 | 三块轮询 |             27.793 → 19.720 |              92.0 → 91.6 |        +0.1% |
+
+两端的 RGB565 切片差分均登记 2 个候选，尝试 8 次，成功准入、执行、提交和公开发布各 3 次。DMA 登记 2 个候选，尝试 10 次，成功准入、执行、提交和公开发布各 2 次。RGB565 的观察者对照均回退，报告给出 `observed` 等原因。三块轮询差分确认建立了停驻预约，并在早到中断时恢复到同一个异常返回 PC。
+
 ### 跨器件传播基准
 
 `bench:propagation` 使用真实 DDL/SDK，覆盖发送器、共享电气网络、多接收器及后续边界的中继传播；每组独立核对计数与校验和。使用 `--sizes=1,4,16,64 --samples=20 --warmup=2 --rounds=100` 可指定扇出、采样、预热及传播轮数。JSON 报告中位数、P95/P99 和聚合操作吞吐；它测量结构化传播路径，不代表整帧 UART 摘要或完整芯片速度。配合已有 UART 真实负载确认通用路径上的收益与回退。作为模块导入时不自动运行 CLI；导出的 `preparePropagation({ rounds, steps })` 返回准备好的工厂，`create(sdk, { size })` 为指定 SDK 创建独立场景，提供 `run()`、`verify()`、`dispose()`，可用于计时外准备、逐样本交替的双版本对照。

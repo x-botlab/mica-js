@@ -19,7 +19,8 @@ export type BatchEffect =
       readonly kind: 'fill';
       readonly destination: string;
       readonly destinationBase: number;
-      /** Original safe integer literal; the commit uses `store8`'s low eight bits. */
+      readonly word?: 'le' | 'be';
+      /** Original safe integer literal, truncated by the store width. */
       readonly value: number;
     }
   | {
@@ -28,7 +29,22 @@ export type BatchEffect =
       readonly sourceBase: number;
       readonly destination: string;
       readonly destinationBase: number;
+      readonly word?: 'le' | 'be';
     };
+
+export type BatchScalar =
+  number | boolean | { readonly cursorOffset: number; readonly subtractCursor?: true };
+export interface BatchOutput {
+  readonly channel: string;
+  readonly value: BatchScalar;
+}
+
+/** Auxiliary write relative to the memory effect and the cursor write. */
+export interface BatchStateWrite {
+  readonly name: string;
+  readonly value: BatchScalar;
+  readonly position: 'beforeMemory' | 'beforeCursor' | 'afterCursor';
+}
 
 /**
  * Immutable compiler proof for one batch-capable loop. Names remain names: every plan is
@@ -39,6 +55,8 @@ export interface BatchPlan {
   readonly limit: BatchLimit;
   readonly stepPs: number;
   readonly effect: BatchEffect;
+  readonly stateWrites?: readonly BatchStateWrite[];
+  readonly outputs?: readonly BatchOutput[];
   /** Effect-key form of the slots this loop reads, for instance admission. */
   readonly reads: readonly string[];
   /** Effect-key form of the slots this loop writes, for instance admission. */
@@ -258,8 +276,14 @@ function offset(script: Script, id: number, at: number, cursor: string): number 
   return undefined;
 }
 
-/** `cursor = cursor + 1`, accepted with either operand order. */
-function increment(script: Script, id: number, at: number, cursor: string): Entry | undefined {
+/** A byte or halfword cursor advances by one item, with either operand order. */
+function increment(
+  script: Script,
+  id: number,
+  at: number,
+  cursor: string,
+  width: number,
+): Entry | undefined {
   const entry = script.result(id, at);
   if (entry === undefined) return undefined;
   const operation = entry.operation;
@@ -270,14 +294,14 @@ function increment(script: Script, id: number, at: number, cursor: string): Entr
   )
     return undefined;
   if (
-    integerConstant(script, operation.right, entry.at) === 1 &&
+    integerConstant(script, operation.right, entry.at) === width &&
     cursorRead(script, operation.left, entry.at, cursor)
   ) {
     script.use(entry);
     return entry;
   }
   if (
-    integerConstant(script, operation.left, entry.at) === 1 &&
+    integerConstant(script, operation.left, entry.at) === width &&
     cursorRead(script, operation.right, entry.at, cursor)
   ) {
     script.use(entry);
@@ -296,17 +320,23 @@ function createPlan(
   limit: BatchLimit,
   stepPs: number,
   effect: BatchEffect,
+  stateWrites: readonly BatchStateWrite[],
+  outputs: readonly BatchOutput[],
 ): BatchPlan {
   const reads = [`state:${cursor}`];
   if (limit.kind === 'state') reads.push(`state:${limit.name}`);
   if (effect.kind === 'copy') reads.push(`memory:${effect.source}`);
   const writes = [`state:${cursor}`];
   if (effect.kind !== 'advance') writes.push(`memory:${effect.destination}`);
+  for (const write of stateWrites) writes.push(`state:${write.name}`);
+  for (const output of outputs) writes.push(`channel:${output.channel}`);
   return Object.freeze({
     cursor,
     limit,
     stepPs,
     effect,
+    ...(stateWrites.length === 0 ? {} : { stateWrites }),
+    ...(outputs.length === 0 ? {} : { outputs }),
     reads: Object.freeze(reads),
     writes: Object.freeze(writes),
   });
@@ -317,6 +347,40 @@ interface StepShape {
   readonly stepPs: number;
   readonly terminator: OperationIR;
   readonly local: number | undefined;
+  readonly stateWrites: readonly BatchStateWrite[];
+  readonly outputs: readonly BatchOutput[];
+}
+
+function scalar(
+  script: Script,
+  id: number,
+  at: number,
+  cursor: string,
+  cursorWriteAt: number,
+): BatchScalar | undefined {
+  const input = script.result(id, at);
+  if (input?.operation.kind === 'constant' && input.operation.constant.kind === 'bool') {
+    script.use(input);
+    return input.operation.constant.value;
+  }
+  const literal = numberConstant(script, id, at);
+  if (literal !== undefined) return literal;
+  const expression = input?.operation;
+  if (
+    input !== undefined &&
+    input.at < cursorWriteAt &&
+    expression?.kind === 'binary' &&
+    expression.operator === 'subtract' &&
+    expression.type.kind === 'number'
+  ) {
+    const base = integerConstant(script, expression.left, input.at);
+    if (base !== undefined && cursorRead(script, expression.right, input.at, cursor)) {
+      script.use(input);
+      return Object.freeze({ cursorOffset: base, subtractCursor: true });
+    }
+  }
+  const cursorOffset = offset(script, id, Math.min(at, cursorWriteAt), cursor);
+  return cursorOffset === undefined ? undefined : Object.freeze({ cursorOffset });
 }
 
 /**
@@ -328,6 +392,7 @@ function proveStep(
   entries: readonly Entry[],
   cursor: string,
   mode: 'process' | 'jit',
+  limit: BatchLimit,
   pc?: number,
 ): StepShape | undefined {
   const last = entries.at(-1);
@@ -346,26 +411,31 @@ function proveStep(
   script.use(last);
 
   const writes = entries.filter((entry) => entry.operation.kind === 'write');
-  if (writes.length !== 1) return undefined;
-  const write = writes[0]!;
+  const cursorWrites = writes.filter(
+    (entry) => entry.operation.kind === 'write' && entry.operation.name === cursor,
+  );
+  const write = cursorWrites[0];
   if (
-    write.operation.kind !== 'write' ||
-    write.operation.resource !== 'state' ||
-    write.operation.name !== cursor
+    cursorWrites.length !== 1 ||
+    write?.operation.kind !== 'write' ||
+    write.operation.resource !== 'state'
   )
     return undefined;
-  const addition = increment(script, write.operation.value, write.at, cursor);
-  if (addition === undefined) return undefined;
-  script.use(write);
 
   const loads: Entry[] = [];
   const stores: Entry[] = [];
   for (const entry of entries) {
     const kind = entry.operation.kind;
-    if (kind === 'load8') loads.push(entry);
-    else if (kind === 'store8') stores.push(entry);
-    else if (loadKinds.has(kind) || storeKinds.has(kind) || kind === 'copyBytes') return undefined;
+    if (loadKinds.has(kind)) loads.push(entry);
+    else if (storeKinds.has(kind)) stores.push(entry);
+    else if (kind === 'copyBytes') return undefined;
   }
+  const storeKind = stores[0]?.operation.kind;
+  const word = storeKind === 'store16le' ? 'le' : storeKind === 'store16be' ? 'be' : undefined;
+  const width = word === undefined ? 1 : 2;
+  const addition = increment(script, write.operation.value, write.at, cursor, width);
+  if (addition === undefined) return undefined;
+  script.use(write);
 
   let effect: BatchEffect;
   let local: number | undefined;
@@ -374,31 +444,51 @@ function proveStep(
     if (stores.length === 0) effect = Object.freeze({ kind: 'advance' });
     else if (stores.length === 1) {
       const store = stores[0]!;
-      if (store.operation.kind !== 'store8') return undefined;
+      if (
+        store.operation.kind !== 'store8' &&
+        store.operation.kind !== 'store16le' &&
+        store.operation.kind !== 'store16be'
+      )
+        return undefined;
       const destination = memoryName(store.operation.memory);
       if (destination === undefined) return undefined;
       const destinationBase = offset(script, store.operation.offset, store.at, cursor);
       const value = integerConstant(script, store.operation.value, store.at);
       if (value === undefined || destinationBase === undefined) return undefined;
       script.use(store);
-      effect = Object.freeze({ kind: 'fill', destination, destinationBase, value });
+      effect = Object.freeze({
+        kind: 'fill',
+        destination,
+        destinationBase,
+        value,
+        ...(word === undefined ? {} : { word }),
+      });
       memoryAt = store.at;
     } else return undefined;
   } else {
     if (loads.length !== 1 || stores.length !== 1) return undefined;
     const load = loads[0]!;
     const store = stores[0]!;
-    if (load.operation.kind !== 'load8' || store.operation.kind !== 'store8' || load.at >= store.at)
+    const loadOp = load.operation;
+    const storeOp = store.operation;
+    if (
+      !(
+        (loadOp.kind === 'load8' && storeOp.kind === 'store8') ||
+        (loadOp.kind === 'load16le' && storeOp.kind === 'store16le') ||
+        (loadOp.kind === 'load16be' && storeOp.kind === 'store16be')
+      ) ||
+      load.at >= store.at
+    )
       return undefined;
-    const source = memoryName(load.operation.memory);
-    const destination = memoryName(store.operation.memory);
+    const source = memoryName(loadOp.memory);
+    const destination = memoryName(storeOp.memory);
     if (source === undefined || destination === undefined) return undefined;
-    const sourceBase = offset(script, load.operation.offset, load.at, cursor);
-    const destinationBase = offset(script, store.operation.offset, store.at, cursor);
+    const sourceBase = offset(script, loadOp.offset, load.at, cursor);
+    const destinationBase = offset(script, storeOp.offset, store.at, cursor);
     if (sourceBase === undefined || destinationBase === undefined) return undefined;
     script.use(load);
 
-    const valueEntry = script.result(store.operation.value, store.at);
+    const valueEntry = script.result(storeOp.value, store.at);
     if (valueEntry === undefined) return undefined;
     if (valueEntry === load) {
       // Inline `store8(dst, ..., load8(src, ...))`; the load is the value.
@@ -413,7 +503,7 @@ function proveStep(
       const localEntry = localEntries[0]!;
       if (
         localEntry.operation.kind !== 'local' ||
-        localEntry.operation.initial !== load.operation.result ||
+        localEntry.operation.initial !== loadOp.result ||
         localEntry.at <= load.at ||
         localEntry.at >= store.at
       )
@@ -429,13 +519,50 @@ function proveStep(
       sourceBase,
       destination,
       destinationBase,
+      ...(word === undefined ? {} : { word }),
     });
     memoryAt = store.at;
   }
 
-  if (memoryAt !== undefined && addition.at <= memoryAt) return undefined;
-  if (write.at <= addition.at) return undefined;
-  return Object.freeze({ effect, stepPs, terminator: last.operation, local });
+  if (memoryAt !== undefined && write.at <= memoryAt) return undefined;
+  const stateWrites: BatchStateWrite[] = [];
+  for (const entry of writes) {
+    if (entry === write) continue;
+    const operation = entry.operation;
+    if (
+      operation.kind !== 'write' ||
+      operation.resource !== 'state' ||
+      (limit.kind === 'state' && limit.name === operation.name)
+    )
+      return undefined;
+    const value = scalar(script, operation.value, entry.at, cursor, write.at);
+    if (value === undefined) return undefined;
+    script.use(entry);
+    const position =
+      entry.at > write.at
+        ? 'afterCursor'
+        : memoryAt !== undefined && entry.at < memoryAt
+          ? 'beforeMemory'
+          : 'beforeCursor';
+    stateWrites.push(Object.freeze({ name: operation.name, value, position }));
+  }
+  const outputs: BatchOutput[] = [];
+  for (const entry of entries) {
+    const operation = entry.operation;
+    if (operation.kind !== 'send') continue;
+    const value = scalar(script, operation.value, entry.at, cursor, write.at);
+    if (value === undefined) return undefined;
+    script.use(entry);
+    outputs.push(Object.freeze({ channel: operation.channel, value }));
+  }
+  return Object.freeze({
+    effect,
+    stepPs,
+    terminator: last.operation,
+    local,
+    stateWrites: Object.freeze(stateWrites),
+    outputs: Object.freeze(outputs),
+  });
 }
 
 function proveProcessTest(
@@ -471,7 +598,7 @@ export function proveProcessBatchLoop(
 
     const script = new Script();
     const entries = script.addRegion(operation.body, 0);
-    const step = proveStep(script, entries, test.cursor, 'process');
+    const step = proveStep(script, entries, test.cursor, 'process', test.limit);
     if (step === undefined || !script.complete()) return undefined;
     const wait = step.terminator as Extract<OperationIR, { readonly kind: 'wait' }>;
     const waitNode = analysis.byOperation.get(wait);
@@ -530,7 +657,14 @@ export function proveProcessBatchLoop(
       }
     }
 
-    const plan = createPlan(test.cursor, test.limit, step.stepPs, step.effect);
+    const plan = createPlan(
+      test.cursor,
+      test.limit,
+      step.stepPs,
+      step.effect,
+      step.stateWrites,
+      step.outputs,
+    );
     return Object.freeze({ plan, wait });
   } catch {
     return undefined;
@@ -559,9 +693,16 @@ export function proveJitBatch(instruction: InstructionIR): BatchPlan | undefined
     const test = condition(script, branch.condition, branchEntry.at);
     if (test === undefined) return undefined;
     script.use(branchEntry);
-    const step = proveStep(script, entries, test.cursor, 'jit', pc);
+    const step = proveStep(script, entries, test.cursor, 'jit', test.limit, pc);
     if (step === undefined || !script.complete()) return undefined;
-    return createPlan(test.cursor, test.limit, step.stepPs, step.effect);
+    return createPlan(
+      test.cursor,
+      test.limit,
+      step.stepPs,
+      step.effect,
+      step.stateWrites,
+      step.outputs,
+    );
   } catch {
     return undefined;
   }

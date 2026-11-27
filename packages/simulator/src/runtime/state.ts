@@ -25,6 +25,7 @@ import type {
   JitLoopCandidate,
   JitOptions,
   JitPolling,
+  JitPollingCheckpoint,
 } from '../types';
 
 export type Decl<K extends DeclarationIR['kind']> = Extract<DeclarationIR, { kind: K }>;
@@ -166,6 +167,16 @@ export interface DirectPromotion {
 }
 /** Validated polling declaration minus its PC key. */
 export type JitPollingBinding = Omit<JitPolling, 'pc'>;
+export interface JitPollingReservation {
+  readonly start: number;
+  readonly due: number;
+  readonly advance: string;
+  readonly checkpoints: readonly JitPollingCheckpoint[];
+  readonly dependencies: Map<ResourceSlot, number>;
+  index: number;
+  nextAt: number;
+  cancelled: boolean;
+}
 export interface DirectExecution {
   /** Fixed dispatcher plus incrementally installed instruction routes. */
   readonly session: DirectJitSession;
@@ -259,6 +270,7 @@ export interface Jit {
   pollingOrigin: number;
   /** Invalidates a previously scheduled polling time event after any other wake. */
   pollingToken: number;
+  pollingReservation: JitPollingReservation | undefined;
   /** A dependency slot was invalidated after this JIT parked; its predicate may now hold. */
   dependencyDirty: boolean;
   /** The dependency set already registered in `ResourceSlot.waiters`. */

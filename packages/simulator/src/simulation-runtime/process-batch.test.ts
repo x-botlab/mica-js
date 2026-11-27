@@ -558,7 +558,7 @@ describe('process batch execution', () => {
     expect(disjointOn.pops).toBeLessThan(disjointOff.pops / 2);
   });
 
-  it('pauses folding for a parked JIT waiter and resumes after it resolves', () => {
+  it('folds disjoint writes while a JIT waits and keeps its wake position', () => {
     interface WaiterResult {
       readonly outputs: readonly Collected[];
       readonly cursor: unknown;
@@ -663,7 +663,7 @@ describe('process batch execution', () => {
 
     const control = waitingProcess(false, false);
     const parked = waitingProcess(true, true);
-    expect(parked.before.pushes).toBe(control.before.pushes);
+    expect(parked.before.pushes).toBeLessThan(control.before.pushes);
     expect(parked.before.pushes).toBeGreaterThan(0);
     expect(parked.parkedBefore).toBe(1);
     expect(control.parkedBefore).toBe(0);
