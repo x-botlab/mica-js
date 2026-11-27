@@ -10,6 +10,7 @@ export function ToolbarPart(props: {
   readonly onError: (error: unknown) => void;
 }) {
   const [more, setMore] = useState(false);
+  const [controlling, setControlling] = useState(false);
   const toolbar = useRef<HTMLDivElement>(null);
   const modeGroup = useRef<HTMLDivElement>(null);
   const measurements = useRef<HTMLDivElement>(null);
@@ -76,6 +77,16 @@ export function ToolbarPart(props: {
   }, [items]);
   const visible = items.slice(0, layout.count);
   const overflow = items.slice(layout.count);
+  const runMode = props.state.mode === 'run';
+  const paused = props.state.simulationStatus === 'paused';
+  const canControl = !runMode || paused || props.state.simulationStatus === 'running';
+  const control = (action: () => Promise<void>) => {
+    setMore(false);
+    setControlling(true);
+    void action()
+      .catch(props.onError)
+      .finally(() => setControlling(false));
+  };
   const execute = (item: IWorkbenchToolbarItem) => {
     setMore(false);
     if (!props.registry.enabled(item)) return;
@@ -114,28 +125,33 @@ export function ToolbarPart(props: {
           <Icon name="ellipsis" />
         </span>
       </div>
-      <div
-        ref={modeGroup}
-        className="mica-wb-mode"
-        role="group"
-        aria-label="工作台模式"
-        data-mode={props.state.mode}
-      >
-        {(['edit', 'run'] as const).map((mode) => (
+      <div ref={modeGroup} className="mica-wb-mode" role="group" aria-label="仿真控制">
+        <button
+          className="is-primary"
+          disabled={props.state.busy || controlling || !canControl}
+          onClick={() =>
+            control(() =>
+              !runMode
+                ? props.context.workbench.setMode('run')
+                : props.context.workbench.executeCommand(
+                    paused ? 'simulation.resume' : 'simulation.pause',
+                  ),
+            )
+          }
+        >
+          <Icon name={runMode && !paused ? 'debug-pause' : 'play'} />
+          {runMode ? (paused ? '继续' : '暂停') : '运行'}
+        </button>
+        {runMode && (
           <button
-            key={mode}
-            aria-pressed={props.state.mode === mode}
-            disabled={props.state.busy}
-            className={props.state.mode === mode ? 'is-active' : ''}
-            onClick={() => {
-              setMore(false);
-              void props.context.workbench.setMode(mode).catch(props.onError);
-            }}
+            disabled={props.state.busy || controlling}
+            title="结束仿真并返回编辑"
+            onClick={() => control(() => props.context.workbench.setMode('edit'))}
           >
-            <Icon name={mode === 'edit' ? 'edit' : 'play'} />
-            {mode === 'edit' ? '编辑' : '运行'}
+            <Icon name="debug-restart" />
+            复位
           </button>
-        ))}
+        )}
       </div>
       {items.length > 0 && (
         <>
