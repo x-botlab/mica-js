@@ -127,7 +127,6 @@ describe('instance audio integration', () => {
     cleanups.push(() => runtime.dispose());
     const a = host.views[0]!.context.audio;
     const b = host.views[1]!.context.audio;
-    expect(host.surfaces).toHaveLength(0);
     const tone = a.tone({ frequency: 480, type: 'square' });
     const stream = a.createStream({ sampleRate: 48000, bufferMs: 50, startMs: 0 });
     const samples = new Float32Array(stream.capacityFrames).fill(0.25);
@@ -555,6 +554,55 @@ describe('fused wire hooks', () => {
 });
 describe('fused runtime bridge', () => {
   it.each(['edit', 'run'] as const)(
+    'renders static views after each %s presentation is prepared',
+    async (mode) => {
+      const data = await fixture();
+      const second = '22222222-2222-4222-8222-222222222222';
+      const frames: IFusedOverlayFrame[] = [];
+      const bench = workbench();
+      const makeRuntime = async (instances: typeof data.document.instances) => {
+        const runtime = await createFusedRuntime({
+          ...data,
+          document: { ...data.document, instances },
+          step: STEP,
+          mode,
+          workers: bench.workers,
+          onOverlay: (frame) => frames.push(frame),
+        });
+        cleanups.push(() => runtime.dispose());
+        return runtime;
+      };
+
+      let runtime = await makeRuntime(data.document.instances);
+      await waitFor(() => frames.length === 1);
+      expect(frames.map((frame) => frame.instanceId)).toEqual([INSTANCE_ID]);
+      expect(bench.views[0]!.trace).toContain('initialize');
+
+      await runtime.dispose();
+      frames.length = 0;
+      runtime = await makeRuntime([
+        ...data.document.instances,
+        { ...data.document.instances[0]!, id: second },
+      ]);
+      await waitFor(() => frames.length === 2);
+      expect(frames.map((frame) => frame.instanceId)).toEqual([INSTANCE_ID, second]);
+
+      if (mode === 'run') {
+        frames.length = 0;
+        await runtime.reset();
+        await waitFor(() => frames.length === 2);
+        expect(frames.map((frame) => frame.instanceId)).toEqual([INSTANCE_ID, second]);
+      }
+
+      await runtime.dispose();
+      frames.length = 0;
+      await makeRuntime([{ ...data.document.instances[0]!, id: second }]);
+      await waitFor(() => frames.length === 1);
+      expect(frames.map((frame) => frame.instanceId)).toEqual([second]);
+    },
+  );
+
+  it.each(['edit', 'run'] as const)(
     'keeps geometry-only devices available without a presentation error in %s mode',
     async (mode) => {
       const data = await fixture({ ...MANIFEST, view2d: { geometry: GEOMETRY } });
@@ -732,17 +780,19 @@ describe('fused runtime bridge', () => {
     const frames: IFusedOverlayFrame[] = [];
     const { runtime, bench } = await start({ mode: 'edit', frames });
 
+    await waitFor(() => frames.length === 1);
     const frame = await runtime.display.render(INSTANCE_ID, { width: 8, height: 8, scale: 1 });
-    expect(frame).toMatchObject({ instanceId: INSTANCE_ID, generation: 1 });
-    expect(frames).toHaveLength(1);
+    expect(frame).toMatchObject({ instanceId: INSTANCE_ID, generation: 2 });
+    expect(frames).toHaveLength(2);
     expect(bench.views[0]!.context.model).toBeUndefined();
-    expect(bench.views[0]!.renders).toBe(1);
+    expect(bench.views[0]!.renders).toBe(2);
   });
 
   it('renders overlays with the local transform and drops superseded frames', async () => {
     const frames: IFusedOverlayFrame[] = [];
     const { runtime, bench } = await start({ mode: 'run', frames });
 
+    await waitFor(() => frames.length === 1);
     const frame = await runtime.display.render(INSTANCE_ID, {
       width: 16,
       height: 16,
@@ -753,10 +803,10 @@ describe('fused runtime bridge', () => {
       width: 16,
       height: 16,
       scale: 2,
-      generation: 1,
+      generation: 2,
     });
-    expect(frames).toHaveLength(1);
-    const calls = bench.surfaces[0]!.calls;
+    expect(frames).toHaveLength(2);
+    const calls = bench.surfaces.at(-1)!.calls;
     expect(calls).toContain('save');
     expect(calls).toContain('clear:16x16');
     // Local origin (-1, -1) at two device pixels per unit.
@@ -768,8 +818,8 @@ describe('fused runtime bridge', () => {
       runtime.display.render(INSTANCE_ID, { width: 16, height: 16, scale: 2 }),
     ]);
     expect(superseded).toBeUndefined();
-    expect(latest?.generation).toBe(3);
-    expect(frames.map((entry) => entry.generation)).toEqual([1, 3]);
+    expect(latest?.generation).toBe(4);
+    expect(frames.map((entry) => entry.generation)).toEqual([1, 2, 4]);
   });
 
   it('repaints when a presentation asks for it', async () => {
@@ -779,10 +829,11 @@ describe('fused runtime bridge', () => {
     await start({ mode: 'run', bench, frames });
     expect(view).toBeDefined();
 
+    await waitFor(() => frames.length === 1);
     const spy = bench.views[0]!;
     spy.context.invalidate();
-    await waitFor(() => frames.length === 1);
-    expect(frames[0]!.instanceId).toBe(INSTANCE_ID);
+    await waitFor(() => frames.length === 2);
+    expect(frames[1]!.instanceId).toBe(INSTANCE_ID);
   });
 
   it('switches modes by releasing and rebuilding models and presentations', async () => {
