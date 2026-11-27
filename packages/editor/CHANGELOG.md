@@ -1,5 +1,11 @@
 # @mica-js/editor
 
+## 0.8.3
+
+### Patch Changes
+
+- 60d29b7: Simplify workbench simulation controls with run, pause, continue, and reset actions.
+
 ## 0.8.2
 
 ### Patch Changes
