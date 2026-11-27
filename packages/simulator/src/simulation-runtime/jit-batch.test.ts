@@ -199,6 +199,151 @@ function runPair(
 }
 
 describe('JIT batch execution', () => {
+  it('runs one Direct iteration after each rejected fill plan', () => {
+    const { enabled, reference, enabledHarness, referenceHarness } = runPair(
+      {
+        translate(input, block) {
+          block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => {
+            const cursor = body.readState('cursor', types.number);
+
+            body.store16le('dst', cursor, 0xabcd);
+            body.writeState('cursor', body.add(cursor, 2));
+            body.elapse(STEP);
+          });
+          input.markBatchLoop?.({
+            pc: input.pc,
+            fill16: { memory: 'dst', stepPs: STEP, summarize: 'summarize' },
+          });
+          return block.finish();
+        },
+        configure(builder) {
+          const record = builder.record({
+            name: 'Fill',
+            fields: { byteOffset: types.number, rounds: types.number, value: types.number },
+          });
+          builder.pureFn(
+            {
+              name: 'summarize',
+              params: [{ name: 'window', type: types.number }],
+              returns: types.optional(record),
+            },
+            (body) =>
+              body.returnValue(
+                body.optional(
+                  body.record(record, {
+                    byteOffset: 0,
+                    rounds: 10_000,
+                    value: 0xabcd,
+                  }),
+                ),
+              ),
+          );
+        },
+      },
+      95,
+    );
+    try {
+      expect(enabled).toEqual(reference);
+      expect(enabledHarness.jit.direct?.session.has(0)).toBe(true);
+      expect(directJitStats(enabledHarness.jit)?.directGenericInstructions).toBe(0);
+      expect(readJitBatchStats(enabledHarness.jit)).toMatchObject({ attempts: 10, commits: 0 });
+    } finally {
+      enabledHarness.dispose();
+      referenceHarness.dispose();
+    }
+  });
+
+  it.each(['valid', 'too-many-rounds', 'observed'] as const)(
+    'uses the original loop at exact time cuts with a %s fill summary',
+    (kind) => {
+      const limit = 16;
+      const options: Omit<HarnessOptions, 'batch'> = {
+        translate(input, block) {
+          if (input.pc !== 0) {
+            block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
+            return block.finish();
+          }
+          block.instruction({ pc: 0, nextPc: 1 }, (body) => {
+            const cursor = body.readState('cursor', types.number);
+            body.if(body.lessThan(cursor, limit), (step) => {
+              step.writeState('busy', 1);
+              step.store16le('dst', cursor, 0xabcd);
+              step.writeState('cursor', step.add(cursor, 2));
+              step.writeState('busy', 2);
+              step.redirect(step.constant(types.number, 0), step.constant(types.number, STEP));
+            });
+          });
+          input.markBatchLoop?.({
+            pc: 0,
+            fill16: {
+              memory: 'dst',
+              stepPs: STEP,
+              summarize: 'summarize',
+              transientWrites: ['busy'],
+            },
+          });
+          return block.finish();
+        },
+        configure(builder) {
+          const record = builder.record({
+            name: 'Fill',
+            fields: {
+              byteOffset: types.number,
+              rounds: types.number,
+              value: types.number,
+              cursor: types.number,
+            },
+          });
+          builder.pureFn(
+            {
+              name: 'summarize',
+              params: [{ name: 'window', type: types.number }],
+              returns: types.optional(record),
+            },
+            (body, { window }) => {
+              const cursor = body.readState('cursor', types.number);
+              const rounds =
+                kind === 'too-many-rounds'
+                  ? body.constant(types.number, 10_000)
+                  : body.min(
+                      body.divide(body.subtract(limit, cursor), 2),
+                      body.floor(body.divide(body.subtract(window, 1), STEP)),
+                    );
+              body.returnValue(
+                body.optional(
+                  body.record(record, {
+                    byteOffset: cursor,
+                    rounds,
+                    value: 0xabcd,
+                    cursor: body.add(cursor, body.multiply(rounds, 2)),
+                  }),
+                ),
+              );
+            },
+          );
+          if (kind === 'observed')
+            builder.on({ name: 'watchBusy', sourcePath: ['busy'] }, () => {});
+        },
+      };
+      const enabled = createHarness({ ...options, batch: true });
+      const reference = createHarness({ ...options, batch: false });
+      try {
+        for (const target of [39, 40, 41, 79, 80, 81]) {
+          enabled.board.runUntil(target);
+          reference.board.runUntil(target);
+          expect(snapshot(enabled)).toEqual(snapshot(reference));
+        }
+        expect(enabled.instance.states.get('busy')).toBe(2);
+        const commits = readJitBatchStats(enabled.jit)?.commits ?? 0;
+        if (kind === 'valid') expect(commits).toBeGreaterThan(0);
+        else expect(commits).toBe(0);
+      } finally {
+        enabled.dispose();
+        reference.dispose();
+      }
+    },
+  );
+
   for (const effect of ['advance', 'fill', 'copy'] as const) {
     it(`commits ${effect} rounds once and matches per-instruction execution`, () => {
       const { enabled, reference, enabledHarness, referenceHarness } = runPair({ effect }, 2560);

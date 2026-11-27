@@ -83,6 +83,15 @@ export interface ProcessBatchRegistration {
 export interface JitBatchMark {
   readonly pc: number;
   readonly stopBefore?: string;
+  /** Summary of complete rounds of a loop that fills contiguous little-endian words. */
+  readonly fill16?: {
+    readonly memory: string;
+    readonly stepPs: number;
+    /** Local pure fn `(windowPs: number) -> record?`. See the JIT throughput contract. */
+    readonly summarize: string;
+    /** Resources written and restored within a round, guarded alongside the final writes. */
+    readonly transientWrites?: readonly string[];
+  };
 }
 /** Direct 时间准入声明；`service` 引用本实例 number 状态，`blocked` 引用安静的 pure fn 且依赖 `service`。 */
 export interface JitDirectTiming {

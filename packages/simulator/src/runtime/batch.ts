@@ -5,6 +5,8 @@ import type {
   BatchScalar,
   ProcessBatchPlan,
 } from '@mica-js/compiler';
+import type { JitBatchMark } from '../types';
+import { dataObject } from '../values';
 import type { Instance } from './instance';
 import type { Channel, ResourceSlot } from './state';
 import { MAX_TIME } from './execution';
@@ -31,11 +33,7 @@ interface MemoryBinding {
 
 export interface BoundBatch {
   readonly instance: Instance;
-  readonly cursor: string;
-  readonly limit: BatchLimit;
   readonly stepPs: number;
-  readonly effect: BatchEffect;
-  readonly stopBefore: string | undefined;
   readonly pc: string | undefined;
   readonly writes: ReadonlySet<ResourceSlot>;
   /** Real ticks resume block for processes; `undefined` for a JIT plan. */
@@ -270,11 +268,7 @@ export function bindBatch(
 
   const bound: BoundBatch = {
     instance,
-    cursor: cursor.name,
-    limit,
     stepPs: plan.stepPs,
-    effect,
-    stopBefore: stop?.name,
     pc: pc?.name,
     resumeBlock,
     writes: writtenSlots,
@@ -406,4 +400,176 @@ export function bindBatch(
     },
   };
   return Object.freeze(bound);
+}
+
+type Fill16 = NonNullable<JitBatchMark['fill16']>;
+
+export function captureFill16(value: unknown): Fill16 {
+  dataObject(value, ['memory', 'stepPs', 'summarize', 'transientWrites']);
+  const { memory, stepPs, summarize, transientWrites } = value;
+  if (
+    typeof memory !== 'string' ||
+    !memory ||
+    !safeInteger(stepPs) ||
+    stepPs <= 0 ||
+    typeof summarize !== 'string' ||
+    !summarize
+  )
+    throw new TypeError('Invalid fill16 batch mark');
+  const names: string[] = [];
+  if (Object.hasOwn(value, 'transientWrites')) {
+    if (!Array.isArray(transientWrites)) throw new TypeError('Expected batch resource names');
+    for (let index = 0; index < transientWrites.length; index++) {
+      const item = Object.getOwnPropertyDescriptor(transientWrites, String(index));
+      if (typeof item?.value !== 'string' || !item.value)
+        throw new TypeError('Expected a batch resource name');
+      names.push(item.value);
+    }
+  }
+  return { memory, stepPs, summarize, transientWrites: names };
+}
+
+const nativeLittleEndian = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
+const fillFields = ['byteOffset', 'rounds', 'value'] as const;
+
+/** Bind a model's closed-form loop summary to the normal batch scheduler and resource guards. */
+export function bindFill16(
+  instance: Instance,
+  fill: Fill16,
+  stopBefore: string | undefined,
+  pcState: string,
+): BoundBatch | undefined {
+  const destination = memoryBinding(instance, fill.memory);
+  const pc = stateBinding(instance, pcState);
+  const stop = stopBefore === undefined ? undefined : stateBinding(instance, stopBefore);
+  const fn = instance.declarations.get(fill.summarize);
+  if (
+    destination === undefined ||
+    instance.isCodeMemory(fill.memory) ||
+    pc === undefined ||
+    (stopBefore !== undefined && (stop === undefined || stop.name === pc.name)) ||
+    fn?.kind !== 'function' ||
+    !fn.pure ||
+    fn.params.length !== 1 ||
+    fn.params[0]?.type.kind !== 'number' ||
+    fn.returns?.kind !== 'optional' ||
+    fn.returns.inner.kind !== 'record'
+  )
+    return undefined;
+  const record = instance.declarations.get(fn.returns.inner.name);
+  if (
+    record?.kind !== 'record' ||
+    fillFields.some(
+      (name) => !record.fields.some((field) => field.name === name && field.type === 'number'),
+    )
+  )
+    return undefined;
+
+  const writes = new Set<ResourceSlot>([destination.slot, pc.slot]);
+  const updates = new Map<string, 'number' | 'bool'>();
+  for (const { name, type } of record.fields) {
+    if (name === 'byteOffset' || name === 'rounds' || name === 'value') continue;
+    const state = instance.declarations.get(name);
+    const slot = instance.stateResources.get(name);
+    if (
+      state?.kind !== 'state' ||
+      state.type.kind !== type ||
+      slot === undefined ||
+      name === pc.name ||
+      name === stop?.name
+    )
+      return undefined;
+    writes.add(slot);
+    updates.set(name, type);
+  }
+  for (const name of fill.transientWrites ?? []) {
+    const slot = instance.stateResources.get(name) ?? instance.memoryResources.get(name);
+    if (slot === undefined || name === stop?.name || instance.isCodeMemory(name)) return undefined;
+    writes.add(slot);
+  }
+  const otherStates = [...new Set([...updates.keys(), ...(fill.transientWrites ?? [])])].filter(
+    (name) => name !== pc.name,
+  );
+
+  const bytes = destination.bytes;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+  const words =
+    nativeLittleEndian && bytes.byteOffset % 2 === 0
+      ? new Uint16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.length / 2))
+      : undefined;
+  return Object.freeze<BoundBatch>({
+    instance,
+    stepPs: fill.stepPs,
+    pc: pc.name,
+    resumeBlock: undefined,
+    writes,
+    prepare(now, executionEnd, nextEventAt, schedulerYieldAt) {
+      if (!instance.valid || instance.isCodeMemory(fill.memory)) return 'binding';
+      if (instance.activeJitPcCount(pc.name) > 1) return 'binding';
+      for (const slot of writes)
+        if (slot.subscribers.size !== 0 || (slot.waiters?.size ?? 0) !== 0) return 'observed';
+      for (const name of otherStates) if (instance.activeJitPcCount(name) !== 0) return 'binding';
+
+      const stopValue = stop === undefined ? Infinity : instance.states.get(stop.name);
+      if (stop !== undefined && !validTime(stopValue)) return 'state';
+      const upper = Math.min(
+        executionEnd,
+        nextEventAt,
+        schedulerYieldAt ?? Infinity,
+        stopValue as number,
+      );
+      const window = upper - now;
+      if (window <= 2 * fill.stepPs) return 'window';
+      let result: unknown;
+      try {
+        result = instance.syncCall(fill.summarize, [window]);
+        if (result == null) return 'state';
+        dataObject(result);
+      } catch {
+        return 'state';
+      }
+      const { byteOffset, rounds, value } = result;
+      if (
+        !safeInteger(rounds) ||
+        rounds < 2 ||
+        !safeInteger(byteOffset) ||
+        byteOffset < 0 ||
+        byteOffset % 2 !== 0 ||
+        !safeInteger(value) ||
+        value < 0 ||
+        value > 0xffff
+      )
+        return 'state';
+      const length = rounds * 2;
+      const due = now + rounds * fill.stepPs;
+      if (!validTime(due) || due >= upper) return 'window';
+      if (length > bytes.length - byteOffset) return 'bounds';
+      const stateValues: [string, unknown][] = [];
+      for (const [name, type] of updates) {
+        const next = result[name];
+        if (
+          type === 'number'
+            ? typeof next !== 'number' || !Number.isFinite(next)
+            : typeof next !== 'boolean'
+        )
+          return 'state';
+        stateValues.push([name, next]);
+      }
+      let applied = false;
+      return {
+        due,
+        lastAt: due - fill.stepPs,
+        rounds,
+        apply() {
+          if (applied) return;
+          applied = true;
+          const end = byteOffset + length;
+          if (words !== undefined) words.fill(value, byteOffset / 2, end / 2);
+          else for (let at = byteOffset; at < end; at += 2) view.setUint16(at, value, true);
+          instance.memoryChanged(fill.memory, byteOffset, length);
+          for (const [name, next] of stateValues) instance.host.write(name, next);
+        },
+      };
+    },
+  });
 }
