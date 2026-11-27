@@ -1,5 +1,11 @@
 # @mica-js/editor
 
+## 0.8.2
+
+### Patch Changes
+
+- 161a982: Render an initial overlay frame for static views after preparing or resetting a fused runtime.
+
 ## 0.8.1
 
 ### Patch Changes
