@@ -182,6 +182,8 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
     // `initialize` runs after the models mounted and delivered their initial events.
     await displayHost.activate();
     if (!current()) return prepared;
+    // Static views need an initial frame even when they never invalidate themselves.
+    displayHost.display.invalidate();
     if (input.mode === 'run') {
       // A run session starts advancing once every presentation subscribed to its model.
       await mapWireFailure(() => connection.simulation.resume());
@@ -220,6 +222,7 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
     if (!current()) return;
     await displayHost.activate();
     if (!current()) return;
+    displayHost.display.invalidate();
     await mapWireFailure(() => connection.simulation.resume());
   }
 
