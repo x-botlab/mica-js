@@ -1,5 +1,13 @@
 # @mica-js/simulator
 
+## 2.11.1
+
+### Patch Changes
+
+- Updated dependencies [4cb01cb]
+- Updated dependencies [cf712aa]
+  - @mica-js/compiler@0.11.1
+
 ## 2.11.0
 
 ### Minor Changes

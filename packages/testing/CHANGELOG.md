@@ -1,5 +1,11 @@
 # @mica-js/testing
 
+## 0.1.11
+
+### Patch Changes
+
+- @mica-js/sdk@0.7.1
+
 ## 0.1.10
 
 ### Patch Changes
