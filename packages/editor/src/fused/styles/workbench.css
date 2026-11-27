@@ -355,33 +355,14 @@
   z-index: 4;
 }
 .mica-wb-mode {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  display: flex;
   flex-shrink: 0;
   padding: 2px;
   gap: 2px;
   border-radius: 20px;
   background: var(--mica-panel);
 }
-.mica-wb-mode::before {
-  content: '';
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  left: 2px;
-  width: calc((100% - 6px) / 2);
-  border-radius: inherit;
-  background: var(--mica-accent);
-  pointer-events: none;
-  transform: translateX(0);
-  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
-}
-.mica-wb-mode[data-mode='run']::before {
-  transform: translateX(calc(100% + 2px));
-}
 .mica-wb-mode > button {
-  position: relative;
   display: flex;
   gap: 5px;
   align-items: center;
@@ -391,8 +372,8 @@
   white-space: nowrap;
   transition: color 180ms ease;
 }
-.mica-wb-mode > button.is-active {
-  background: transparent;
+.mica-wb-mode > button.is-primary {
+  background: var(--mica-accent);
   color: var(--mica-accent-foreground);
 }
 .mica-wb-toolbar-divider {
@@ -753,7 +734,6 @@
     margin-right: 0;
   }
   @media (prefers-reduced-motion: reduce) {
-    .mica-wb-mode::before,
     .mica-wb-mode > button {
       transition: none;
     }
