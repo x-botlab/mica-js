@@ -63,6 +63,8 @@ export interface IWorkbenchCommandMap {
   'simulation.pause': IWorkbenchCommand;
   /** Host-only resume of the mounted run session; no-op when already running. */
   'simulation.resume': IWorkbenchCommand;
+  /** Host-only restart of the mounted run session: rebuilds the models, then advances. */
+  'simulation.restart': IWorkbenchCommand;
   'canvas.fit': IWorkbenchCommand;
   'canvas.zoom': IWorkbenchCommand<{ readonly factor: number }>;
   'canvas.setTool': IWorkbenchCommand<{ readonly tool: WorkbenchTool }>;

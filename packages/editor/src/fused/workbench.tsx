@@ -464,7 +464,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     );
     return task;
   }
-  function controlSimulation(operation: 'pause' | 'resume'): Promise<void> {
+  function controlSimulation(operation: 'pause' | 'resume' | 'restart'): Promise<void> {
     return enqueue(async () => {
       assertReady();
       if (mode !== 'run') throw new Error(`simulation.${operation} requires Run mode`);
@@ -666,6 +666,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     'workbench.setMode': ({ mode }) => setMode(mode),
     'simulation.pause': () => controlSimulation('pause'),
     'simulation.resume': () => controlSimulation('resume'),
+    'simulation.restart': () => controlSimulation('restart'),
     'canvas.fit': async () => {
       canvas?.fit();
     },

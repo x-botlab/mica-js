@@ -78,8 +78,7 @@ export function ToolbarPart(props: {
   const visible = items.slice(0, layout.count);
   const overflow = items.slice(layout.count);
   const runMode = props.state.mode === 'run';
-  const paused = props.state.simulationStatus === 'paused';
-  const canControl = !runMode || paused || props.state.simulationStatus === 'running';
+
   const control = (action: () => Promise<void>) => {
     setMore(false);
     setControlling(true);
@@ -128,28 +127,22 @@ export function ToolbarPart(props: {
       <div ref={modeGroup} className="mica-wb-mode" role="group" aria-label="仿真控制">
         <button
           className="is-primary"
-          disabled={props.state.busy || controlling || !canControl}
-          onClick={() =>
-            control(() =>
-              !runMode
-                ? props.context.workbench.setMode('run')
-                : props.context.workbench.executeCommand(
-                    paused ? 'simulation.resume' : 'simulation.pause',
-                  ),
-            )
-          }
+          disabled={props.state.busy || controlling}
+          onClick={() => control(() => props.context.workbench.setMode(runMode ? 'edit' : 'run'))}
         >
-          <Icon name={runMode && !paused ? 'debug-pause' : 'play'} />
-          {runMode ? (paused ? '继续' : '暂停') : '运行'}
+          <Icon name={runMode ? 'debug-stop' : 'play'} />
+          {runMode ? '停止' : '运行'}
         </button>
         {runMode && (
           <button
             disabled={props.state.busy || controlling}
-            title="结束仿真并返回编辑"
-            onClick={() => control(() => props.context.workbench.setMode('edit'))}
+            title="重启仿真"
+            onClick={() =>
+              control(() => props.context.workbench.executeCommand('simulation.restart'))
+            }
           >
             <Icon name="debug-restart" />
-            复位
+            重启
           </button>
         )}
       </div>

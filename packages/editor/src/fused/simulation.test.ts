@@ -14,6 +14,9 @@ function fixture(status: FusedSessionStatus = 'running') {
   const resume = vi.fn(async () => {
     setState({ status: 'running', simTime: state.simTime });
   });
+  const reset = vi.fn(async () => {
+    setState({ status: 'running', simTime: timePs(0) });
+  });
   function setState(next: IFusedSessionState): void {
     state = next;
     states.fire(next);
@@ -23,11 +26,27 @@ function fixture(status: FusedSessionStatus = 'running') {
     onDidChangeState: states.event,
     pause,
     resume,
+    reset,
   };
-  return { runtime, setState, pause, resume, dispose: () => states.dispose() };
+  return { runtime, setState, pause, resume, reset, dispose: () => states.dispose() };
 }
 
 describe('fused simulation control', () => {
+  it('restarts the mounted session from the captured bytes', async () => {
+    const bench = fixture('paused');
+    const changes: Array<FusedSessionStatus | undefined> = [];
+    const control = createSimulationControl((status) => changes.push(status));
+    control.attach(bench.runtime);
+
+    await control.restart();
+    expect(bench.reset).toHaveBeenCalledTimes(1);
+    expect(control.status).toBe('running');
+    expect(changes).toEqual(['paused', 'running']);
+
+    control.dispose();
+    bench.dispose();
+  });
+
   it('mirrors status transitions of the same run session and ignores simulated time', async () => {
     const bench = fixture('running');
     const changes: Array<FusedSessionStatus | undefined> = [];
@@ -84,6 +103,7 @@ describe('fused simulation control', () => {
     const control = createSimulationControl((status) => changes.push(status));
     await expect(control.pause()).rejects.toThrow(/requires a run session/);
     await expect(control.resume()).rejects.toThrow(/requires a run session/);
+    await expect(control.restart()).rejects.toThrow(/requires a run session/);
 
     control.attach(bench.runtime);
     control.detach();
