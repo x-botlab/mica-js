@@ -1,9 +1,10 @@
 /**
- * Host-only pause/resume of the fused workbench run session.
+ * Host-only pause, resume and restart of the fused workbench run session.
  *
  * The workbench owns the runtime and serializes mode transitions; this control only mirrors the
- * status of the attached session and forwards pause/resume. Pausing keeps the session mounted:
+ * status of the attached session and forwards the commands. Pausing keeps the session mounted:
  * models, views and subscriptions stay as they are, and only simulated time stops advancing.
+ * Restarting rebuilds the models from the same captured bytes before advancing again.
  */
 import type { Disposable, Event } from '@mica-js/core/lifecycle';
 import type { FusedSessionStatus, IFusedSessionState } from './runtime/protocol';
@@ -14,6 +15,8 @@ export interface ISimulationRuntime {
   readonly onDidChangeState: Event<IFusedSessionState>;
   pause(): Promise<void>;
   resume(): Promise<void>;
+  /** Rebuilds the models and presentation of the run session from the same captured bytes, then advances. */
+  reset(): Promise<void>;
 }
 
 /** Commands and state a host observes while a run session is mounted. */
@@ -28,6 +31,8 @@ export interface IFusedSimulationControl {
   pause(): Promise<void>;
   /** Restarts advancement once the session acknowledged it; a no-op while already running. */
   resume(): Promise<void>;
+  /** Rebuilds the run session from its captured bytes and advances from the start. */
+  restart(): Promise<void>;
   dispose(): void;
 }
 
@@ -58,7 +63,7 @@ export function createSimulationControl(
     publish(undefined);
   }
 
-  function requireSession(operation: 'pause' | 'resume'): ISimulationRuntime {
+  function requireSession(operation: 'pause' | 'resume' | 'restart'): ISimulationRuntime {
     if (closed) throw new Error(`simulation.${operation} requires an active workbench`);
     if (runtime === undefined) throw new Error(`simulation.${operation} requires a run session`);
     return runtime;
@@ -89,6 +94,11 @@ export function createSimulationControl(
       const active = requireSession('resume');
       if (status === 'running') return;
       await active.resume();
+      if (runtime === active && !closed) publish(active.getState().status);
+    },
+    async restart() {
+      const active = requireSession('restart');
+      await active.reset();
       if (runtime === active && !closed) publish(active.getState().status);
     },
     dispose() {

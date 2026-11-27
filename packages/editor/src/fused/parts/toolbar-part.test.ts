@@ -32,24 +32,27 @@ describe('fused workbench simulation controls', () => {
   it('offers only Run while editing', () => {
     const html = render();
     expect(html).toContain('>运行</button>');
-    expect(html).not.toContain('>编辑</button>');
-    expect(html).not.toContain('>复位</button>');
+    expect(html).not.toContain('>停止</button>');
+    expect(html).not.toContain('>重启</button>');
   });
 
-  it('offers Pause and Reset while running and Continue and Reset while paused', () => {
-    const running = render({ mode: 'run', simulationStatus: 'running' });
-    expect(running).toContain('>暂停</button>');
-    expect(running).toContain('>复位</button>');
-    const paused = render({ mode: 'run', simulationStatus: 'paused' });
-    expect(paused).toContain('>继续</button>');
-    expect(paused).toContain('>复位</button>');
-    expect(paused).toContain('结束仿真并返回编辑');
+  it('offers Stop and Restart throughout the run session', () => {
+    for (const simulationStatus of ['running', 'paused', 'faulted'] as const) {
+      const html = render({ mode: 'run', simulationStatus });
+      expect(html).toContain('codicon-debug-stop');
+      expect(html).toContain('>停止</button>');
+      expect(html).toContain('codicon-debug-restart');
+      expect(html).toContain('<button title="重启仿真"');
+      expect(html).toContain('>重启</button>');
+      expect(html).not.toContain('>继续</button>');
+      expect(html).not.toContain('>暂停</button>');
+    }
   });
 
-  it('disables controls during transitions and leaves Reset available after a fault', () => {
+  it('disables controls during transitions and keeps Stop available after a fault', () => {
     expect(render({ busy: true })).toContain('disabled=""');
     const faulted = render({ mode: 'run', simulationStatus: 'faulted' });
-    expect(faulted).toContain('class="is-primary" disabled=""');
-    expect(faulted).toContain('<button title="结束仿真并返回编辑"');
+    expect(faulted).not.toContain('class="is-primary" disabled=""');
+    expect(faulted).toContain('<button title="重启仿真"');
   });
 });
