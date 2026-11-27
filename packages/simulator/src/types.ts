@@ -185,6 +185,17 @@ export interface JitDelay {
   };
 }
 
+export interface JitPollingCheckpoint {
+  /** Offset from the wait's start in ps. The first checkpoint starts at zero. */
+  readonly at: number;
+  /** The visible PC written at instruction entry, before the writeback call. */
+  readonly nextPc: number;
+  /** The PC after a block that transfers control during its writeback call. */
+  readonly resumePc?: number;
+  /** Optional synchronous, zero-argument model function for this block's writeback. */
+  readonly call?: string;
+}
+
 /**
  * A throughput-only wait point. When `predicate` is false the JIT parks until a dependency
  * changes. If `wait` is present, `delay` supplies the picoseconds to the next device time
@@ -199,10 +210,18 @@ export interface JitPolling {
   readonly predicate: string;
   readonly consume?: string;
   readonly wait?: {
-    /** Pure zero-argument function returning the delay in picoseconds, or zero to park. */
+    /** Pure zero-argument function returning the delay in picoseconds. */
     readonly delay: string;
     /** Function receiving the elapsed picoseconds and applying the device time event. */
     readonly advance: string;
+    /**
+     * Ordered instruction writebacks within the interval returned by `delay`, enabled
+     * on throughput boards with `batchExecution`.
+     * Each checkpoint runs at its original JIT boundary. Invalidation resumes at the
+     * published PC after the current block's remaining time. `advance` runs only at the
+     * reserved service time and receives the full interval.
+     */
+    readonly checkpoints?: readonly JitPollingCheckpoint[];
   };
 }
 

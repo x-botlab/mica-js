@@ -785,7 +785,7 @@ describe('JIT batch falls back for conflicting execution modes', () => {
     }
   });
 
-  it('keeps code metadata providers on the ordinary path', () => {
+  it('admits batch heads with current dynamic code metadata', () => {
     const provider = (): JitCodeMetadata => ({ polling: [], delays: new Map() });
     const { enabled, reference, enabledHarness, referenceHarness } = runPair(
       { codeMetadata: provider },
@@ -793,7 +793,48 @@ describe('JIT batch falls back for conflicting execution modes', () => {
     );
     try {
       expect(enabled).toEqual(reference);
-      expect(readJitBatchStats(enabledHarness.jit)).toBeUndefined();
+      expect(readJitBatchStats(enabledHarness.jit)!.commits).toBeGreaterThan(0);
+    } finally {
+      enabledHarness.dispose();
+      referenceHarness.dispose();
+    }
+  });
+
+  it('admits a virtual service head from the primary generation while its hook stays quiet', () => {
+    const servicePc = 64;
+    const { enabled, reference, enabledHarness, referenceHarness } = runPair(
+      {
+        pcInitial: servicePc,
+        codeMetadata: () => ({ polling: [], delays: new Map() }),
+        beforeInstruction: { when: 'servicePending', call: 'service' },
+        configure(builder) {
+          builder.state({ name: 'servicePending', type: types.bool, initial: false });
+          builder.fn({ name: 'service', params: [] }, (body) => {
+            body.writeState('servicePending', false);
+          });
+        },
+        translate(input, block) {
+          if (input.pc === servicePc) {
+            input.markBatchLoop?.({ pc: servicePc });
+            block.instruction({ pc: servicePc, nextPc: servicePc + 1 }, (body) => {
+              const cursor = body.readState('cursor', types.number);
+              body.if(body.lessThan(cursor, 32), (step) => {
+                step.writeState('cursor', step.add(cursor, 1));
+                step.redirect(servicePc, STEP);
+              });
+            });
+          } else {
+            block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
+          }
+          return block.finish();
+        },
+      },
+      321,
+    );
+    try {
+      expect(enabled).toEqual(reference);
+      expect(enabled.cursor).toBe(32);
+      expect(readJitBatchStats(enabledHarness.jit)!.commits).toBeGreaterThan(0);
     } finally {
       enabledHarness.dispose();
       referenceHarness.dispose();

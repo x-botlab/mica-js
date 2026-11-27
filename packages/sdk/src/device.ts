@@ -26,6 +26,7 @@ export type {
   JitCodeMetadataProvider,
   JitDelay,
   JitPolling,
+  JitPollingCheckpoint,
   InstructionHook,
   Disposable,
   Event,

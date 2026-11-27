@@ -3,8 +3,15 @@ import { type DeclarationIR, type DeviceIR, validateDeviceIR } from '@mica-js/de
 import type { ExecutionHost, ResourceHandle } from '@mica-js/compiler';
 import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
-import { bindBatch, type BoundBatch, type ProcessBatchRegistration } from './batch';
-import { body, computation, resumable, resumableBatch, synchronousBody } from './execution';
+import {
+  bindBatch,
+  type BatchDecline,
+  type BatchKind,
+  type BatchStage,
+  type BoundBatch,
+  type ProcessBatchRegistration,
+} from './batch';
+import { body, computation, resumable, resumableBatch, synchronousBody, time } from './execution';
 import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
 import {
   clearPromotions,
@@ -50,6 +57,7 @@ import type {
   JitCodeRegion,
   JitDelay,
   JitOptions,
+  JitPollingCheckpoint,
   RuntimeDiagnosticCode,
   RuntimePhase,
   SimulationError,
@@ -63,6 +71,8 @@ export interface InstanceBoard {
   readonly current: Instance | undefined;
   /** Effective batch admission: option enabled and execution mode is throughput. */
   readonly batchExecution: boolean;
+  recordBatch(kind: BatchKind, stage: BatchStage): void;
+  declineBatch(kind: BatchKind, reason: BatchDecline): undefined;
   /** Monotonic count of resource-version mutations on the whole board. */
   readonly resourceEpoch: number;
   noteResourceVersion(slot: ResourceSlot): void;
@@ -517,6 +527,7 @@ export class Instance {
     if (registrations.has(loop as number))
       throw this.invalidBatchBinding('Duplicate process batch registration');
 
+    board.recordBatch('process', 'candidates');
     let bound: BoundBatch | undefined;
     if (board.batchExecution && process.resumable !== undefined) {
       const compilation = resumableBatch(process.declaration.body);
@@ -533,6 +544,8 @@ export class Instance {
         }
       }
     }
+    if (bound !== undefined) board.recordBatch('process', 'registered');
+    else if (board.batchExecution) board.declineBatch('process', 'proof');
     registrations.set(loop as number, { bound });
     (this.processBatchRegistrations ??= new Map()).set(process, registrations);
     this.syncProcessBatches(process);
@@ -1305,7 +1318,7 @@ export class Instance {
         });
     return Object.freeze(result);
   }
-  send(name: string, value: unknown, input: boolean): void {
+  send(name: string, value: unknown, input: boolean, at = this.board.time): void {
     const channel = this.channels.get(name);
     if (!channel || channel.declaration.direction !== (input ? 'input' : 'output'))
       throw new TypeError(`Unknown channel ${name}`);
@@ -1322,7 +1335,7 @@ export class Instance {
       }
       queue.shift();
     }
-    queue.push({ time: this.board.time, value: captured });
+    queue.push({ time: at, value: captured });
   }
   private bindingObject(
     value: unknown,
@@ -1494,7 +1507,7 @@ export class Instance {
       }
       let wait: JitPollingBinding['wait'];
       if (Object.hasOwn(item, 'wait')) {
-        dataObject(item.wait, ['delay', 'advance']);
+        dataObject(item.wait, ['delay', 'advance', 'checkpoints']);
         const delay = identity(item.wait.delay);
         const advance = identity(item.wait.advance);
         const delayFn = this.declarations.get(delay);
@@ -1510,7 +1523,53 @@ export class Instance {
           advanceFn.returns !== undefined
         )
           throw this.board.error('INVALID_BINDING', 'Invalid polling wait functions', this);
-        wait = Object.freeze({ delay, advance });
+        const raw = item.wait.checkpoints;
+        let checkpoints: readonly JitPollingCheckpoint[] | undefined;
+        if (Object.hasOwn(item.wait, 'checkpoints')) {
+          if (!Array.isArray(raw) || raw.length === 0)
+            throw this.board.error('INVALID_BINDING', 'Invalid polling checkpoints', this);
+          let previous = -1;
+          checkpoints = Object.freeze(
+            Array.from(raw, (checkpoint) => {
+              dataObject(checkpoint, ['at', 'nextPc', 'resumePc', 'call']);
+              const at = time(checkpoint.at);
+              if (at <= previous || (previous === -1 && at !== 0))
+                throw this.board.error('INVALID_BINDING', 'Invalid polling checkpoint order', this);
+              previous = at;
+              const nextPc = finite(checkpoint.nextPc, 'polling next pc');
+              const position = {
+                at,
+                nextPc,
+                ...(Object.hasOwn(checkpoint, 'resumePc')
+                  ? { resumePc: finite(checkpoint.resumePc, 'polling resume pc') }
+                  : {}),
+              };
+              if (!Object.hasOwn(checkpoint, 'call')) {
+                if (position.resumePc !== undefined)
+                  throw this.board.error(
+                    'INVALID_BINDING',
+                    'Polling resume pc requires a call',
+                    this,
+                  );
+                return Object.freeze(position);
+              }
+              const call = identity(checkpoint.call);
+              const fn = this.declarations.get(call);
+              if (fn?.kind !== 'function' || fn.params.length !== 0 || fn.returns !== undefined)
+                throw this.board.error(
+                  'INVALID_BINDING',
+                  'Invalid polling checkpoint function',
+                  this,
+                );
+              return Object.freeze({ ...position, call });
+            }),
+          );
+        }
+        wait = Object.freeze({
+          delay,
+          advance,
+          ...(checkpoints === undefined ? {} : { checkpoints }),
+        });
       }
       polling.set(
         pc,
@@ -1737,6 +1796,7 @@ export class Instance {
       pollingPeriod: 0,
       pollingOrigin: 0,
       pollingToken: 0,
+      pollingReservation: undefined,
       dependencyDirty: true,
       waiterSlots: undefined,
       active: true,
@@ -1755,6 +1815,7 @@ export class Instance {
         jit.execution = undefined;
         delete jit.predicate;
         jit.pollingToken++;
+        jit.pollingReservation = undefined;
         this.board.unparkWaiter(jit);
         jit.cache.clear();
         jit.cacheMemories.clear();

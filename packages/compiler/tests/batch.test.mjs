@@ -590,7 +590,7 @@ test('legal but unsupported process shapes decline without losing the machine', 
   const declines = [
     (body) => {
       const extra = [];
-      write(extra, 'other', constant(extra, 1));
+      write(extra, 'other', read(extra, 'unproven'));
       body.unshift(...extra);
     },
     (body) => {

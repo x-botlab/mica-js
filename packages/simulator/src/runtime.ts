@@ -11,8 +11,22 @@ import { ActivationQueue, EventQueue, Fifo } from './queue';
 import { compileObservation } from './observations';
 import { Instance } from './runtime/instance';
 import { registerPublishGate } from './runtime/publish-gate';
-import type { BoundBatch, PreparedBatch } from './runtime/batch';
-import { readDirectCheckpointStats, runJit, syncJitCall, type BoundarySource } from './runtime/jit';
+import {
+  batchStats,
+  type BatchDecline,
+  type BatchKind,
+  type BatchStage,
+  type BatchStats,
+  type BoundBatch,
+  type PreparedBatch,
+} from './runtime/batch';
+import {
+  cancelPollingReservation,
+  readDirectCheckpointStats,
+  runJit,
+  syncJitCall,
+  type BoundarySource,
+} from './runtime/jit';
 import { body, computation, frame, MAX_TIME, synchronousBody, time } from './runtime/execution';
 import {
   acceptSync,
@@ -212,12 +226,14 @@ class BoardRuntime implements Board {
   private waiterEpoch = 0;
   /** `waiterEpoch` at the last parked-JIT scan; equal means no parked JIT can have woken. */
   private waitingScanEpoch = 0;
-  /** Parked JITs whose `pollingWait` is set: their polling boundary needs every round. */
+  /** Automatic periodic polls whose time boundary needs recomputing each round. */
   private pollingWaiterCount = 0;
   readonly jits: Jit[] = [];
   readonly instances: Instance[] = [];
   /** Aggregate counters are disabled by default so formal runs avoid per-checkpoint writes. */
   readonly checkpointDiagnostics: boolean;
+  private readonly batchPublications: Map<Instance, Record<BatchKind, number>> | undefined;
+  private readonly batchStats: Readonly<Record<BatchKind, BatchStats>> | undefined;
   private readonly boundaryStats: BoundaryStats | undefined;
   private network!: ElectricalNetwork;
   private primary: SimulationError | undefined;
@@ -268,6 +284,10 @@ class BoardRuntime implements Board {
       if (typeof requestedBatchExecution !== 'boolean')
         throw new TypeError('batchExecution must be a boolean');
       this.batchExecution = requestedBatchExecution && execution === 'throughput';
+      this.batchPublications = this.checkpointDiagnostics ? new Map() : undefined;
+      this.batchStats = this.checkpointDiagnostics
+        ? { process: batchStats(), jit: batchStats() }
+        : undefined;
       const cpuQuantum = Object.hasOwn(options, 'cpuQuantum')
         ? integer(options.cpuQuantum, 'cpuQuantum')
         : 10_000_000;
@@ -479,6 +499,19 @@ class BoardRuntime implements Board {
     const boundary = this.boundaryStats;
     return Object.freeze({
       diagnostics: this.checkpointDiagnostics,
+      batchExecution:
+        this.batchStats === undefined
+          ? undefined
+          : Object.freeze({
+              process: Object.freeze({
+                ...this.batchStats.process,
+                declines: Object.freeze({ ...this.batchStats.process.declines }),
+              }),
+              jit: Object.freeze({
+                ...this.batchStats.jit,
+                declines: Object.freeze({ ...this.batchStats.jit.declines }),
+              }),
+            }),
       boundary: Object.freeze({
         calls: boundary?.calls ?? 0,
         empty: boundary?.empty ?? 0,
@@ -727,12 +760,30 @@ class BoardRuntime implements Board {
       this.events.time > horizon
     );
   }
+  recordBatch(kind: BatchKind, stage: BatchStage): void {
+    const stats = this.batchStats?.[kind];
+    if (stats !== undefined) stats[stage]++;
+  }
+  stageBatchPublication(instance: Instance, kind: BatchKind): void {
+    const publications = this.batchPublications;
+    if (publications === undefined) return;
+    let counts = publications.get(instance);
+    if (counts === undefined) publications.set(instance, (counts = { process: 0, jit: 0 }));
+    counts[kind]++;
+  }
+  declineBatch(kind: BatchKind, reason: BatchDecline): undefined {
+    const counts = this.batchStats?.[kind].declines;
+    if (counts !== undefined) counts[reason] = (counts[reason] ?? 0) + 1;
+    return undefined;
+  }
   /**
    * Scheduler admission for one already-bound batch. This is a pure gate: every check is
    * performed before the prepared commit may write, and any decline leaves the caller's
    * original position untouched.
    */
   prepareBatch(batch: BoundBatch, schedulerYieldAt?: number): PreparedBatch | undefined {
+    const kind = batch.resumeBlock === undefined ? 'jit' : 'process';
+    if (kind === 'process') this.recordBatch(kind, 'attempts');
     if (
       !this.batchExecution ||
       this.status !== 'ready' ||
@@ -741,25 +792,26 @@ class BoardRuntime implements Board {
       this.current !== batch.instance ||
       !batch.instance.valid
     )
-      return undefined;
-    // Only the entry being dispatched may fold. Any remaining model, JIT or parked waiter
-    // keeps its original relative position.
-    if (this.models.length !== 0 || this.readyJits.length !== 0 || this.waitingJits.size !== 0)
-      return undefined;
-    // The publication closure must be completely settled before a commit reads resources.
-    // `reactionBatch` is scratch space: `boundary()` leaves its last settled entries in
-    // place until the next observation drain, so its length does not indicate pending work.
-    if (this.pendingElectricalSlot !== -1 || this.observations.size !== 0) return undefined;
-    if (
-      schedulerYieldAt !== undefined &&
-      schedulerYieldAt !== Infinity &&
-      !Number.isSafeInteger(schedulerYieldAt)
-    )
-      return undefined;
+      return this.declineBatch(kind, 'scheduler');
+    if (this.models.length !== 0 || this.readyJits.length !== 0)
+      return this.declineBatch(kind, 'ready');
+    // A sleeping JIT owns no dispatch before its next timer or dependency write. The
+    // timer is part of events.time and the bound plan guards every written slot.
+    // Automatically folded polls also have a scheduler-computed boundary.
+    for (const waiter of this.waitingJits)
+      if (
+        (waiter.pollingWait && waiter.pollingPeriod > 0) ||
+        !waiter.instance.dependenciesCurrent(waiter.dependencies)
+      )
+        return this.declineBatch(kind, 'waiter');
+    if (this.pendingElectricalSlot !== -1 || this.observations.size !== 0)
+      return this.declineBatch(kind, 'publication');
     const nextEventAt = this.events.time;
-    // A same-time event still waiting at the head belongs to this round.
-    if (!(nextEventAt > this.time)) return undefined;
-    return batch.prepare(this.time, this.executionEnd, nextEventAt, schedulerYieldAt);
+    if (!(nextEventAt > this.time)) return this.declineBatch(kind, 'window');
+    const prepared = batch.prepare(this.time, this.executionEnd, nextEventAt, schedulerYieldAt);
+    if (typeof prepared === 'string') return this.declineBatch(kind, prepared);
+    this.recordBatch(kind, 'admitted');
+    return prepared;
   }
   invalidate(slot: ResourceSlot): void {
     slot.version++;
@@ -805,7 +857,7 @@ class BoardRuntime implements Board {
   parkWaiter(jit: Jit): void {
     if (!this.waitingJits.has(jit)) {
       this.waitingJits.add(jit);
-      if (jit.pollingWait) this.pollingWaiterCount++;
+      if (jit.pollingWait && jit.pollingPeriod > 0) this.pollingWaiterCount++;
     }
     this.watchWaiter(jit);
     jit.dependencyDirty = true;
@@ -814,8 +866,8 @@ class BoardRuntime implements Board {
   /** Wakes or drops a parked JIT and removes the registrations that would flag it later. */
   unparkWaiter(jit: Jit): void {
     if (this.waitingJits.delete(jit) && jit.pollingWait) {
+      if (jit.pollingPeriod > 0) this.pollingWaiterCount--;
       jit.pollingWait = false;
-      this.pollingWaiterCount--;
     }
     const slots = jit.waiterSlots;
     if (slots !== undefined) {
@@ -1263,12 +1315,15 @@ class BoardRuntime implements Board {
       this.models.push(process);
     });
     this.time = prepared.lastAt;
+    this.recordBatch('process', 'executed');
     prepared.apply();
+    this.recordBatch('process', 'committed');
     // A folded ticks resume behaves like the ordinary path's transient frame state; live
     // slots stay exact because the resume block reloads them itself.
     frame.value = undefined;
     process.state = 'waiting';
     this.boundary('process');
+    this.stageBatchPublication(process.instance, 'process');
     this.events.push(prepared.due, wake);
     return true;
   }
@@ -1388,10 +1443,11 @@ class BoardRuntime implements Board {
             const jit = this.jits[index]!;
             if (!jit.active || jit.stopped || !this.waitingJits.has(jit)) continue;
             this.watchWaiter(jit);
-            if (!jit.dependencyDirty && !jit.pollingWait) continue;
+            const periodic = jit.pollingWait && jit.pollingPeriod > 0;
+            if (!jit.dependencyDirty && !periodic) continue;
             if (jit.instance.dependenciesCurrent(jit.dependencies)) {
               jit.dependencyDirty = false;
-              if (jit.pollingWait && jit.pollingPeriod > 0) {
+              if (periodic) {
                 const lastStart = MAX_TIME - ((MAX_TIME - jit.pollingOrigin) % jit.pollingPeriod);
                 if (lastStart < MAX_TIME && lastStart < end) {
                   if (lastStart === this.time) {
@@ -1405,7 +1461,9 @@ class BoardRuntime implements Board {
               continue;
             }
             jit.dependencyDirty = false;
-            if (jit.pollingWait) {
+            if (jit.pollingReservation !== undefined) {
+              cancelPollingReservation(this, jit);
+            } else if (jit.pollingWait) {
               jit.pollingToken++;
               delete jit.dependencies;
               this.unparkWaiter(jit);
@@ -1464,6 +1522,12 @@ class BoardRuntime implements Board {
           throw this.wrap(cause, 'DEVICE_CALLBACK_FAILED', 'sync', instance);
         }
         if (this.isFaulted) throw this.primary!;
+        const published = this.batchPublications?.get(instance);
+        if (published !== undefined) {
+          this.batchStats!.process.published += published.process;
+          this.batchStats!.jit.published += published.jit;
+          this.batchPublications!.delete(instance);
+        }
       }
     } catch (cause) {
       const error = this.wrap(
@@ -1519,6 +1583,7 @@ class BoardRuntime implements Board {
       instance.resources.length = 0;
     }
     this.events.clear();
+    this.batchPublications?.clear();
     this.models.clear();
     this.readyJits.clear();
     this.observations.clear();

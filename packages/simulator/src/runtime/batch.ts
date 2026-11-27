@@ -1,10 +1,22 @@
-import type { BatchEffect, BatchLimit, BatchPlan, ProcessBatchPlan } from '@mica-js/compiler';
+import type {
+  BatchEffect,
+  BatchLimit,
+  BatchPlan,
+  BatchScalar,
+  ProcessBatchPlan,
+} from '@mica-js/compiler';
 import type { Instance } from './instance';
-import type { ResourceSlot } from './state';
+import type { Channel, ResourceSlot } from './state';
 import { MAX_TIME } from './execution';
 
 export type { ProcessBatchRegistration, ProcessBatchTarget } from '../types';
-export type { BatchEffect, BatchLimit, BatchPlan, ProcessBatchPlan } from '@mica-js/compiler';
+export type {
+  BatchEffect,
+  BatchLimit,
+  BatchPlan,
+  BatchStateWrite,
+  ProcessBatchPlan,
+} from '@mica-js/compiler';
 
 interface StateBinding {
   readonly name: string;
@@ -25,6 +37,7 @@ export interface BoundBatch {
   readonly effect: BatchEffect;
   readonly stopBefore: string | undefined;
   readonly pc: string | undefined;
+  readonly writes: ReadonlySet<ResourceSlot>;
   /** Real ticks resume block for processes; `undefined` for a JIT plan. */
   readonly resumeBlock: number | undefined;
   /**
@@ -36,16 +49,59 @@ export interface BoundBatch {
     executionEnd: number,
     nextEventAt: number,
     schedulerYieldAt: number | undefined,
-  ): PreparedBatch | undefined;
+  ): PreparedBatch | BatchDecline;
+}
+
+export type BatchKind = 'process' | 'jit';
+export type BatchStage =
+  'candidates' | 'registered' | 'attempts' | 'admitted' | 'executed' | 'committed' | 'published';
+export type BatchDecline =
+  | 'window'
+  | 'bounds'
+  | 'overlap'
+  | 'observed'
+  | 'binding'
+  | 'state'
+  | 'scheduler'
+  | 'ready'
+  | 'waiter'
+  | 'publication'
+  | 'mark'
+  | 'proof'
+  | 'route'
+  | 'hook'
+  | 'capacity';
+
+export type BatchStats = Record<BatchStage, number> & {
+  readonly declines: Partial<Record<BatchDecline, number>>;
+};
+
+export function batchStats(): BatchStats {
+  return {
+    candidates: 0,
+    registered: 0,
+    attempts: 0,
+    admitted: 0,
+    executed: 0,
+    committed: 0,
+    published: 0,
+    declines: {},
+  };
 }
 
 export interface PreparedBatch {
+  readonly rounds: number;
   /** Exact time of the next real wake. */
   readonly due: number;
   /** Last folded round; the board time to publish at. */
   readonly lastAt: number;
   /** Commit the folded rounds once. */
   apply(): void;
+}
+
+function scalarAt(value: BatchScalar, cursor: number): number | boolean {
+  if (typeof value !== 'object') return value;
+  return value.subtractCursor ? value.cursorOffset - cursor : cursor + value.cursorOffset;
 }
 
 function safeInteger(value: unknown): value is number {
@@ -170,6 +226,45 @@ export function bindBatch(
       return undefined;
   }
 
+  const stateWrites = (plan.stateWrites ?? []).map((write) => {
+    const declaration = instance.declarations.get(write.name);
+    const slot = instance.stateResources.get(write.name);
+    const type = typeof write.value === 'boolean' ? 'bool' : 'number';
+    if (
+      slot === undefined ||
+      declaration?.kind !== 'state' ||
+      declaration.type.kind !== type ||
+      write.name === pc?.name ||
+      write.name === stop?.name
+    )
+      return undefined;
+    return { ...write, slot };
+  });
+  if (stateWrites.some((write) => write === undefined)) return undefined;
+  const updates = stateWrites.filter((write) => write !== undefined);
+  const outputs = plan.outputs ?? [];
+  const outputCounts = new Map<Channel, number>();
+  for (const output of outputs) {
+    const channel = instance.channels.get(output.channel);
+    const type = typeof output.value === 'boolean' ? 'bool' : 'number';
+    if (channel?.declaration.direction !== 'output' || channel.declaration.type.kind !== type)
+      return undefined;
+    outputCounts.set(channel, (outputCounts.get(channel) ?? 0) + 1);
+  }
+  const writtenSlots = new Set([cursor.slot, ...updates.map((write) => write.slot)]);
+  if (pc !== undefined) writtenSlots.add(pc.slot);
+  if (destination !== undefined) writtenSlots.add(destination.slot);
+  const word = effect.kind === 'advance' ? undefined : effect.word;
+  const width = word === undefined ? 1 : 2;
+  const destinationView =
+    word !== undefined && effect.kind === 'fill'
+      ? new DataView(
+          destination!.bytes.buffer,
+          destination!.bytes.byteOffset,
+          destination!.bytes.length,
+        )
+      : undefined;
+
   const resumeBlock = 'resumeBlock' in plan ? plan.resumeBlock : undefined;
   if (resumeBlock !== undefined && (!safeInteger(resumeBlock) || resumeBlock < 0)) return undefined;
 
@@ -182,65 +277,52 @@ export function bindBatch(
     stopBefore: stop?.name,
     pc: pc?.name,
     resumeBlock,
+    writes: writtenSlots,
     prepare: (now, executionEnd, nextEventAt, schedulerYieldAt) => {
-      if (!instance.valid) return undefined;
-      // Code ownership can appear after registration (attachJit in the same factory) or
-      // change later, so the destination is rechecked on every admission.
-      if (destination !== undefined && instance.isCodeMemory(destination.name)) return undefined;
+      if (!instance.valid || (destination !== undefined && instance.isCodeMemory(destination.name)))
+        return 'binding';
       const states = instance.states;
       const cursorValue = states.get(cursor.name);
-      if (!safeInteger(cursorValue) || cursorValue < 0) return undefined;
+      // A cursor-valued output can expose signed zero in the first round.
+      if (!safeInteger(cursorValue) || cursorValue < 0 || Object.is(cursorValue, -0))
+        return 'state';
       const limitValue = limit.kind === 'constant' ? limit.value : states.get(limit.name);
-      if (!safeInteger(limitValue) || limitValue <= cursorValue) return undefined;
+      if (!safeInteger(limitValue) || limitValue <= cursorValue) return 'state';
 
       let stopValue = Infinity;
       if (stop !== undefined) {
         const value = states.get(stop.name);
-        if (!validTime(value)) return undefined;
+        if (!validTime(value)) return 'state';
         stopValue = value;
       }
       const stopAt = Math.min(executionEnd, nextEventAt, schedulerYieldAt ?? Infinity, stopValue);
-      if (!(stopAt === Infinity || validTime(stopAt))) return undefined;
-      if (!validTime(now) || !(stopAt > now)) return undefined;
+      if (!(stopAt === Infinity || validTime(stopAt))) return 'window';
+      if (!validTime(now) || !(stopAt > now)) return 'window';
 
       const window = stopAt - now;
-      const rounds = Math.min(limitValue - cursorValue, Math.floor((window - 1) / bound.stepPs));
-      if (!safeInteger(rounds) || rounds < 2) return undefined;
-      // Recheck the multiplied span before adding it to the current time.
+      let rounds = Math.min(
+        Math.ceil((limitValue - cursorValue) / width),
+        Math.floor((window - 1) / bound.stepPs),
+      );
+      if (!safeInteger(rounds) || rounds < 2) return 'window';
+      for (const [channel, count] of outputCounts)
+        rounds = Math.min(rounds, Math.floor((channel.capacity - channel.outgoing.length) / count));
+      if (rounds < 2) return 'capacity';
       const elapsed = rounds * bound.stepPs;
-      if (!safeInteger(elapsed) || elapsed > window - 1) return undefined;
+      const byteLength = rounds * width;
       const due = now + elapsed;
       const lastAt = due - bound.stepPs;
-      const nextCursor = cursorValue + rounds;
-      if (
-        !validTime(due) ||
-        !validTime(lastAt) ||
-        lastAt < now ||
-        due >= stopAt ||
-        !safeInteger(nextCursor) ||
-        nextCursor > limitValue
-      )
-        return undefined;
+      const nextCursor = cursorValue + byteLength;
+      if (!safeInteger(elapsed) || !validTime(due) || due >= stopAt || !safeInteger(nextCursor))
+        return 'window';
 
-      // Every written slot must be quiet for the whole commit. Sources are read-only;
-      // waiting JITs were already excluded by the board gate.
-      if (cursor.slot.subscribers.size !== 0 || (cursor.slot.waiters?.size ?? 0) !== 0)
-        return undefined;
-      if (
-        pc !== undefined &&
-        (pc.slot.subscribers.size !== 0 || (pc.slot.waiters?.size ?? 0) !== 0)
-      )
-        return undefined;
-      if (
-        destination !== undefined &&
-        (destination.slot.subscribers.size !== 0 || (destination.slot.waiters?.size ?? 0) !== 0)
-      )
-        return undefined;
+      for (const slot of writtenSlots)
+        if (slot.subscribers.size !== 0 || (slot.waiters?.size ?? 0) !== 0) return 'observed';
 
-      // A process write must not race an active JIT's PC. A JIT may write its own PC only
-      // when no other active registration shares that state.
-      if (instance.activeJitPcCount(cursor.name) !== 0) return undefined;
-      if (pc !== undefined && instance.activeJitPcCount(pc.name) > 1) return undefined;
+      if (instance.activeJitPcCount(cursor.name) !== 0) return 'binding';
+      if (pc !== undefined && instance.activeJitPcCount(pc.name) > 1) return 'binding';
+      for (const update of updates)
+        if (instance.activeJitPcCount(update.name) !== 0) return 'binding';
 
       let sourceView: Uint8Array | undefined;
       let destinationStart = 0;
@@ -250,9 +332,9 @@ export function bindBatch(
           !safeInteger(destinationStart) ||
           destinationStart < 0 ||
           destinationStart > destination!.bytes.length ||
-          rounds > destination!.bytes.length - destinationStart
+          byteLength > destination!.bytes.length - destinationStart
         )
-          return undefined;
+          return 'bounds';
       } else if (effect.kind === 'copy') {
         destinationStart = effect.destinationBase + cursorValue;
         const sourceStart = effect.sourceBase + cursorValue;
@@ -263,44 +345,62 @@ export function bindBatch(
           sourceStart < 0 ||
           destinationStart > destination!.bytes.length ||
           sourceStart > source!.bytes.length ||
-          rounds > destination!.bytes.length - destinationStart ||
-          rounds > source!.bytes.length - sourceStart
+          byteLength > destination!.bytes.length - destinationStart ||
+          byteLength > source!.bytes.length - sourceStart
         )
-          return undefined;
+          return 'bounds';
         if (source!.bytes.buffer === destination!.bytes.buffer) {
           const sourceOffset = source!.bytes.byteOffset + sourceStart;
           const destinationOffset = destination!.bytes.byteOffset + destinationStart;
           if (
-            sourceOffset < destinationOffset + rounds &&
-            destinationOffset < sourceOffset + rounds
+            sourceOffset < destinationOffset + byteLength &&
+            destinationOffset < sourceOffset + byteLength
           )
-            return undefined;
+            return 'overlap';
         }
-        sourceView = source!.bytes.subarray(sourceStart, sourceStart + rounds);
+        sourceView = source!.bytes.subarray(sourceStart, sourceStart + byteLength);
       }
 
+      const lastCursor = nextCursor - width;
+      const applyUpdates = (position: (typeof updates)[number]['position']): void => {
+        for (const update of updates) {
+          if (update.position !== position) continue;
+          instance.host.write(update.name, scalarAt(update.value, lastCursor));
+        }
+      };
       let applied = false;
       return Object.freeze({
         due,
         lastAt,
+        rounds,
         apply: () => {
           if (applied) return;
           applied = true;
+          if (updates.length !== 0) applyUpdates('beforeMemory');
           if (effect.kind === 'fill') {
-            // `store8` keeps the low eight bits of the proven value.
-            destination!.bytes.fill(
-              effect.value & 0xff,
-              destinationStart,
-              destinationStart + rounds,
-            );
+            const end = destinationStart + byteLength;
+            if (destinationView === undefined) {
+              destination!.bytes.fill(effect.value & 0xff, destinationStart, end);
+            } else {
+              for (let at = destinationStart; at < end; at += 2)
+                destinationView.setUint16(at, effect.value, word === 'le');
+            }
           } else if (effect.kind === 'copy') {
             destination!.bytes.set(sourceView!, destinationStart);
           }
-          // Ordinary effect order: byte writes, their memory publication, then the
-          // folded counter state write. JIT writes its head PC after this commit.
           if (destination !== undefined)
-            instance.memoryChanged(destination.name, destinationStart, rounds);
+            instance.memoryChanged(destination.name, destinationStart, byteLength);
+          if (updates.length !== 0) applyUpdates('beforeCursor');
           instance.host.write(cursor.name, nextCursor);
+          if (updates.length !== 0) applyUpdates('afterCursor');
+          if (outputs.length !== 0) {
+            for (let round = 0; round < rounds; round++) {
+              const at = now + round * bound.stepPs;
+              const cursor = cursorValue + round * width;
+              for (const output of outputs)
+                instance.send(output.channel, scalarAt(output.value, cursor), false, at);
+            }
+          }
         },
       });
     },

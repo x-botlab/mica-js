@@ -164,7 +164,7 @@ async function isExecutable(path) {
   }
 }
 
-export async function findChromium(explicit) {
+export async function findChromium(explicit, preferHeadless = false) {
   if (explicit !== undefined) {
     if (!(await isExecutable(explicit))) throw new Error(`Chromium is not executable: ${explicit}`);
     return explicit;
@@ -191,13 +191,13 @@ export async function findChromium(explicit) {
     if (chromium)
       candidates.push({
         version: Number(chromium[1]),
-        rank: 2,
+        rank: preferHeadless ? 1 : 2,
         path: join(root, entry.name, 'chrome-linux64', 'chrome'),
       });
     else if (headless)
       candidates.push({
         version: Number(headless[1]),
-        rank: 1,
+        rank: preferHeadless ? 2 : 1,
         path: join(root, entry.name, 'chrome-headless-shell-linux64', 'chrome-headless-shell'),
       });
   }
@@ -226,7 +226,7 @@ function contentType(path) {
   }
 }
 
-async function serveDirectory(directory) {
+export async function serveDirectory(directory) {
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');

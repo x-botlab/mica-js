@@ -35,6 +35,7 @@ export class EventQueue<T> {
   }
   clear(): void {
     this.size = 0;
+    this.values.length = 0;
   }
   private before(first: number, second: number): boolean {
     const times = this.times;

@@ -21,7 +21,7 @@ import {
 } from '@mica-js/device-model';
 import { isPollingInstruction } from '../polling';
 import type { EventQueue } from '../queue';
-import { bindBatch, type BoundBatch, type PreparedBatch } from './batch';
+import { bindBatch, type BatchKind, type BoundBatch, type PreparedBatch } from './batch';
 import { acceptSync } from './errors';
 import { body, MAX_TIME, time } from './execution';
 import type { Instance, InstanceBoard } from './instance';
@@ -33,6 +33,8 @@ import type {
   JitInstruction,
   JitMetadataRegion,
   JitPollingBinding,
+  JitPollingReservation,
+  ResourceSlot,
 } from './state';
 import type {
   JitCodeChange,
@@ -1037,15 +1039,14 @@ function captureBatchMark(value: unknown): CapturedBatchMark {
  * and cannot attach to an entry whose identity or code generation is ambiguous.
  */
 function applyBatchMarks(
+  board: JitRuntimeHost,
   jit: Jit,
   canonical: readonly InstructionIR[],
   instructions: JitInstruction[],
   marks: readonly CapturedBatchMark[],
+  translationMemory: string,
 ): void {
   if (marks.length === 0) return;
-  // Both modes keep per-boundary ownership of the PC. The callback stays available on an
-  // enabled throughput board, but the marked site simply stays on the ordinary path.
-  if (jit.options.beforeInstruction !== undefined || jit.metadata !== undefined) return;
   const indicesByPc = new Map<number, number[]>();
   for (let index = 0; index < canonical.length; index++) {
     const pc = canonical[index]!.pc;
@@ -1061,34 +1062,42 @@ function applyBatchMarks(
   }
   for (const mark of marks) {
     const { pc } = mark;
-    if (pc === undefined || !mark.valid) continue;
-    // A duplicated mark is ambiguous. Drop every copy instead of letting callback order
-    // decide which proof the cache entry keeps.
-    if ((validPcs.get(pc) ?? 0) !== 1) continue;
-    if (mark.hasStopBefore) {
-      if (typeof mark.stopBefore !== 'string' || mark.stopBefore.length === 0) continue;
+    const indices = pc === undefined ? undefined : indicesByPc.get(pc);
+    // Count duplicates even when one of the marks had an invalid descriptor.
+    if (
+      pc === undefined ||
+      !mark.valid ||
+      validPcs.get(pc) !== 1 ||
+      indices?.length !== 1 ||
+      (mark.hasStopBefore && (typeof mark.stopBefore !== 'string' || mark.stopBefore.length === 0))
+    ) {
+      board.declineBatch('jit', 'mark');
+      continue;
     }
-    const indices = indicesByPc.get(pc);
-    if (indices === undefined || indices.length !== 1) continue;
     const index = indices[0]!;
     const instruction = instructions[index]!;
-    // Only a physical entry from a bound code region may own a batch route. Polling and
-    // busy-wait declarations keep their existing route instead of receiving a batch one.
+    // A service PC uses the primary code generation. A block translated from another
+    // bank cannot supply this batch proof, even if it includes this PC.
     if (
-      instruction.codeRegion === undefined ||
+      (instruction.codeRegion?.memory ?? jit.options.code) !== translationMemory ||
       instruction.batch !== undefined ||
       instruction.polling ||
       effectivePolling(jit).has(pc) ||
       effectiveDelays(jit).has(pc)
-    )
+    ) {
+      board.declineBatch('jit', 'route');
       continue;
+    }
     let plan: ReturnType<typeof proveJitBatch>;
     try {
       plan = proveJitBatch(canonical[index]!);
     } catch {
       plan = undefined;
     }
-    if (plan === undefined) continue;
+    if (plan === undefined) {
+      board.declineBatch('jit', 'proof');
+      continue;
+    }
     let bound: BoundBatch | undefined;
     try {
       bound = bindBatch(
@@ -1107,9 +1116,12 @@ function applyBatchMarks(
       bound.instance !== jit.instance ||
       bound.pc !== jit.options.pc ||
       bound.resumeBlock !== undefined
-    )
+    ) {
+      board.declineBatch('jit', 'binding');
       continue;
+    }
     instructions[index] = { ...instructions[index]!, batch: bound };
+    board.recordBatch('jit', 'registered');
   }
 }
 
@@ -1474,7 +1486,10 @@ function syncDirectBarriers(jit: Jit): void {
 }
 
 /** Scheduling capabilities needed by JIT execution; all queues remain board-owned. */
-export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
+export interface JitRuntimeHost extends Pick<
+  InstanceBoard,
+  'error' | 'recordBatch' | 'declineBatch'
+> {
   time: number;
   phase: string;
   current: Instance | undefined;
@@ -1496,6 +1511,7 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   canContinueDirect(jit: Jit, horizon: number): boolean;
   /** Validate the scheduler window and reserve one one-shot batch commit. */
   prepareBatch(batch: BoundBatch, schedulerYieldAt?: number): PreparedBatch | undefined;
+  stageBatchPublication(instance: Instance, kind: BatchKind): void;
   queueJit(jit: Jit): void;
   wrap(
     cause: unknown,
@@ -2262,7 +2278,7 @@ function pollingDependencies(
   jit: Jit,
   dependencies: Dependencies,
   pc: number | undefined,
-): Dependencies {
+): Map<ResourceSlot, number> {
   const result = new Map(dependencies);
   const instance = jit.instance;
   const pcSlot = instance.stateResources.get(jit.options.pc)!;
@@ -2272,6 +2288,88 @@ function pollingDependencies(
   const slot = instance.memoryResources.get(memory)!;
   result.set(slot, slot.version);
   return result;
+}
+
+/** Keep the ordinary block ready time even when a dependency changes mid-block. */
+export function cancelPollingReservation(board: JitRuntimeHost, jit: Jit): void {
+  const reservation = jit.pollingReservation!;
+  reservation.cancelled = true;
+  delete jit.dependencies;
+  board.unparkWaiter(jit);
+  if (reservation.nextAt === board.time) board.queueJit(jit);
+}
+
+function runPollingCheckpoint(
+  board: JitRuntimeHost,
+  jit: Jit,
+  reservation: JitPollingReservation,
+): void {
+  const checkpoint = reservation.checkpoints[reservation.index++]!;
+  jit.currentPc = finite(jit.instance.states.get(jit.options.pc), 'pc');
+  jit.instance.host.write(jit.options.pc, checkpoint.nextPc);
+  // The implicit PC write is part of the reservation. Writes from the body or its
+  // publication still invalidate it, including writes to the PC itself.
+  const pcSlot = jit.instance.stateResources.get(jit.options.pc)!;
+  reservation.dependencies.set(pcSlot, pcSlot.version);
+  if (checkpoint.call !== undefined) jit.instance.syncCall(checkpoint.call);
+  const resumePc = checkpoint.resumePc;
+  const transferred =
+    resumePc !== undefined && Object.is(jit.instance.states.get(jit.options.pc), resumePc);
+  if (transferred) reservation.dependencies.set(pcSlot, pcSlot.version);
+
+  const next = reservation.checkpoints[reservation.index];
+  reservation.nextAt = next === undefined ? reservation.due : reservation.start + next.at;
+  if (resumePc !== undefined && !transferred) cancelPollingReservation(board, jit);
+  board.events.push(reservation.nextAt, () => {
+    if (jit.pollingReservation !== reservation) return;
+    if (next === undefined) {
+      const service =
+        !reservation.cancelled && jit.instance.dependenciesCurrent(reservation.dependencies);
+      jit.pollingReservation = undefined;
+      delete jit.dependencies;
+      board.unparkWaiter(jit);
+      if (service) {
+        board.current = jit.instance;
+        jit.instance.syncCall(reservation.advance, [reservation.due - reservation.start]);
+        board.boundary('polling');
+      }
+    }
+    board.queueJit(jit);
+  });
+  board.boundary('polling');
+}
+
+function parkWithCheckpoints(
+  board: JitRuntimeHost,
+  jit: Jit,
+  dependencies: Map<ResourceSlot, number>,
+  duration: number,
+  advance: string,
+  checkpoints: JitPollingReservation['checkpoints'],
+): void {
+  const start = board.time;
+  const due = time(start + duration);
+  // A prefix may cross code regions; keep its generation tied to every executable bank.
+  for (const region of jit.codeRegions) {
+    const slot = jit.instance.memoryResources.get(region.memory)!;
+    dependencies.set(slot, slot.version);
+  }
+  const reservation: JitPollingReservation = {
+    start,
+    due,
+    advance,
+    checkpoints,
+    dependencies,
+    index: 0,
+    nextAt: start,
+    cancelled: false,
+  };
+  jit.pollingReservation = reservation;
+  jit.dependencies = dependencies;
+  jit.pollingWait = true;
+  jit.pollingPeriod = 0;
+  board.parkWaiter(jit);
+  runPollingCheckpoint(board, jit, reservation);
 }
 
 /** Park a polling JIT and, when requested, schedule the next device time event. */
@@ -2377,55 +2475,87 @@ function tryJitBatch(
   jit: Jit,
   pc: number,
   instruction: JitInstruction,
+  hookPending: boolean,
 ): boolean {
-  const batch = instruction.batch;
-  if (batch === undefined) return false;
-  // Hook and metadata providers own per-boundary decisions; a marked site stays ordinary.
+  const batch = instruction.batch!;
+  board.recordBatch('jit', 'attempts');
+  const hook = jit.options.beforeInstruction;
+  if (hook !== undefined) {
+    const slot = jit.instance.stateResources.get(hook.when);
+    if (hookPending || slot === undefined || batch.writes.has(slot)) {
+      board.declineBatch('jit', 'hook');
+      return false;
+    }
+  }
+  const memory = instruction.codeRegion?.memory ?? jit.options.code;
   if (
-    !board.batchExecution ||
-    board.execution !== 'throughput' ||
-    jit.options.beforeInstruction !== undefined ||
-    jit.metadata !== undefined
-  )
+    !jit.active ||
+    jit.stopped ||
+    jit.execution !== undefined ||
+    jit.genericInstruction !== undefined ||
+    (jit.direct !== undefined && jit.direct.frame.resume !== 0) ||
+    jit.cache.get(pc) !== instruction ||
+    instruction.codeVersion !== jit.instance.codeVersion(memory) ||
+    instruction.polling ||
+    effectivePolling(jit).has(pc) ||
+    effectiveDelays(jit).has(pc)
+  ) {
+    board.declineBatch('jit', 'route');
     return false;
-  if (!jit.active || jit.stopped) return false;
-  // A resumed continuation, a pending generic body or a different local entry owns this PC.
-  if (jit.execution !== undefined || jit.genericInstruction !== undefined) return false;
-  if (jit.direct !== undefined && jit.direct.frame.resume !== 0) return false;
-  if (jit.cache.get(pc) !== instruction) return false;
-  if (instruction.codeRegion === undefined) return false;
-  const memory = instruction.codeRegion.memory;
-  if (instruction.codeVersion !== jit.instance.codeVersion(memory)) return false;
-  if (instruction.polling || effectivePolling(jit).has(pc) || effectiveDelays(jit).has(pc))
-    return false;
+  }
+  let yieldAt = Math.min(MAX_TIME, board.time + board.cpuQuantum);
+  const service = jit.options.directTiming?.service;
+  if (service !== undefined) {
+    const instance = jit.instance;
+    const elapsed = instance.states.get(service.elapsed);
+    const deadline = instance.states.get(service.deadline);
+    if (
+      typeof elapsed !== 'number' ||
+      !Number.isSafeInteger(elapsed) ||
+      elapsed < 0 ||
+      typeof deadline !== 'number' ||
+      !Number.isSafeInteger(deadline) ||
+      deadline < 0 ||
+      batch.writes.has(instance.stateResources.get(service.elapsed)!) ||
+      batch.writes.has(instance.stateResources.get(service.deadline)!)
+    ) {
+      board.declineBatch('jit', 'route');
+      return false;
+    }
+    const blocked = jit.options.directTiming?.blocked;
+    if (blocked !== undefined) {
+      try {
+        const checked = instance.evaluate(() => syncJitCall(jit, blocked));
+        if (checked.value !== false) {
+          board.declineBatch('jit', 'route');
+          return false;
+        }
+        for (const slot of checked.dependencies.keys()) {
+          if (batch.writes.has(slot)) {
+            board.declineBatch('jit', 'route');
+            return false;
+          }
+        }
+      } catch {
+        board.declineBatch('jit', 'route');
+        return false;
+      }
+    }
+    if (deadline !== 0) yieldAt = Math.min(yieldAt, board.time + Math.max(0, deadline - elapsed));
+  }
   const stats = board.checkpointDiagnostics ? jitBatchStats(jit) : undefined;
   if (stats !== undefined) stats.attempts++;
-  const start = board.time;
-  const yieldAt = Math.min(MAX_TIME, start + board.cpuQuantum);
   const prepared = board.prepareBatch(batch, yieldAt);
   if (prepared === undefined) {
     if (stats !== undefined) stats.declines++;
     return false;
   }
-  const { due, lastAt } = prepared;
-  const rounds = (due - start) / batch.stepPs;
-  if (
-    !Number.isSafeInteger(due) ||
-    !Number.isSafeInteger(lastAt) ||
-    due <= lastAt ||
-    lastAt < start ||
-    due > yieldAt ||
-    due >= board.executionEnd ||
-    !Number.isSafeInteger(rounds) ||
-    rounds < 2
-  ) {
-    if (stats !== undefined) stats.declines++;
-    return false;
-  }
+  const { due, lastAt, rounds } = prepared;
   // Allocate the one-shot wake before the commit: no callback may observe a committed
   // batch whose timer entry still needs to allocate.
   const wake = () => board.queueJit(jit);
   board.time = lastAt;
+  board.recordBatch('jit', 'executed');
   prepared.apply();
   // The redirect target is the canonical instruction PC. It may be signed zero while the
   // dispatch value used for the cache lookup is +0; numeric state observes the canonical
@@ -2442,7 +2572,9 @@ function tryJitBatch(
     stats.commits++;
     stats.foldedRounds += rounds;
   }
+  board.recordBatch('jit', 'committed');
   board.boundary('runJit');
+  board.stageBatchPublication(jit.instance, 'jit');
   board.events.push(due, wake);
   return true;
 }
@@ -2522,6 +2654,7 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
           : {
               markBatchLoop: (mark: import('../types').JitBatchMark): void => {
                 if (!marking) return;
+                board.recordBatch('jit', 'candidates');
                 batchMarks.push(captureBatchMark(mark));
               },
             }),
@@ -2583,7 +2716,7 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     // Batch routes are attached first so the Direct timing pass can distinguish a span
     // that starts on a head (Direct wins) from one that would cover a different head.
     if (batchMarks !== undefined)
-      applyBatchMarks(jit, block.instructions, instructions, batchMarks);
+      applyBatchMarks(board, jit, block.instructions, instructions, batchMarks, codeMemory);
     if (spanMarks !== undefined || loopMarks !== undefined) {
       applyDirectTimingMarks(jit, instructions, spanMarks ?? [], loopMarks ?? []);
       if (batchMarks !== undefined) resolveBatchDirectConflicts(jit, instructions);
@@ -2634,9 +2767,14 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
   jit.queued = false;
   if (!jit.active || jit.stopped) return;
   board.current = jit.instance;
-  if (jit.metadata !== undefined) {
-    const pc = finite(jit.instance.states.get(jit.options.pc), 'pc');
-    ensureMetadataForPc(board, jit, pc);
+  const reservation = jit.pollingReservation;
+  if (reservation !== undefined) {
+    if (board.time < reservation.nextAt) return;
+    if (!reservation.cancelled) {
+      runPollingCheckpoint(board, jit, reservation);
+      return;
+    }
+    jit.pollingReservation = undefined;
   }
   if (jit.direct?.frame.resume) {
     const outcome = runDirect(board, jit);
@@ -2647,6 +2785,10 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
     return;
   }
   if (!jit.execution) {
+    if (jit.metadata !== undefined) {
+      const pc = finite(jit.instance.states.get(jit.options.pc), 'pc');
+      ensureMetadataForPc(board, jit, pc);
+    }
     jit.automaticPolling = false;
     jit.pollReads = undefined;
     if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
@@ -2684,7 +2826,14 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
     }
     if (board.execution === 'throughput') {
       const declaration = effectivePolling(jit).get(pc);
-      if (declaration) {
+      const checkpoints = declaration?.wait?.checkpoints;
+      if (
+        declaration &&
+        (checkpoints === undefined ||
+          (board.batchExecution &&
+            !hookPending &&
+            !hookReads?.has(jit.instance.stateResources.get(jit.options.pc)!)))
+      ) {
         const checked = jit.instance.evaluate(() => jit.instance.syncCall(declaration.predicate));
         if (checked.value !== true) {
           const dependencies = new Map([...(hookReads ?? []), ...checked.dependencies]);
@@ -2697,16 +2846,29 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
             );
             duration = time(delayed.value);
           }
-          waitForPolling(
-            board,
-            jit,
-            pollingDependencies(jit, dependencies, pc),
-            duration,
-            wait?.advance,
-          );
-          return;
-        }
-        if (declaration.consume) jit.instance.syncCall(declaration.consume);
+          if (checkpoints === undefined) {
+            waitForPolling(
+              board,
+              jit,
+              pollingDependencies(jit, dependencies, pc),
+              duration,
+              wait?.advance,
+            );
+            return;
+          }
+          if (duration > checkpoints.at(-1)!.at && duration <= MAX_TIME - board.time) {
+            parkWithCheckpoints(
+              board,
+              jit,
+              pollingDependencies(jit, dependencies, pc),
+              duration,
+              wait!.advance,
+              checkpoints,
+            );
+            return;
+          }
+          // The translated instruction is the reference path for checkpointed waits.
+        } else if (declaration.consume) jit.instance.syncCall(declaration.consume);
       }
       if (
         !hookPending &&
@@ -2727,7 +2889,8 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
     }
     // Both a cache hit and a fresh translation reach the same admission. Unmarked entries
     // never enter the helper, and a decline keeps the ordinary writer below untouched.
-    if (instruction.batch !== undefined && tryJitBatch(board, jit, pc, instruction)) return;
+    if (instruction.batch !== undefined && tryJitBatch(board, jit, pc, instruction, hookPending))
+      return;
     jit.currentPc = pc;
     if (board.execution === 'throughput' && board.jits.length === 1)
       directStats(jit).directGenericInstructions++;

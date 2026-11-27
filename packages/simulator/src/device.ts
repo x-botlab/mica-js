@@ -29,6 +29,8 @@ export type {
   JitCodeMetadataProvider,
   InstructionHook,
   JitOptions,
+  JitPolling,
+  JitPollingCheckpoint,
   JitHost,
   Disposable,
   Event,
