@@ -256,11 +256,19 @@ function walk(
   });
 }
 class DeclarationIndex {
-  readonly declarations = new Map<string, DeclarationIR>();
-  readonly paths = new Map<string, InputPath>();
-  readonly enums = new Map<string, readonly string[]>(Object.entries(builtins));
-  readonly records = new Map<string, RecordDeclaration['fields']>();
-  readonly functions = new Map<string, FunctionDeclaration>();
+  readonly declarations: Map<string, DeclarationIR>;
+  readonly paths: Map<string, InputPath>;
+  readonly enums: Map<string, readonly string[]>;
+  readonly records: Map<string, RecordDeclaration['fields']>;
+  readonly functions: Map<string, FunctionDeclaration>;
+
+  constructor(base?: DeclarationIndex) {
+    this.declarations = new Map(base?.declarations);
+    this.paths = new Map(base?.paths);
+    this.enums = new Map(base?.enums ?? Object.entries(builtins));
+    this.records = new Map(base?.records);
+    this.functions = new Map(base?.functions);
+  }
 }
 // Only canonical, successfully validated device snapshots can share their declaration index.
 const deviceIndexes = new WeakMap<DeviceIR, DeclarationIndex>();
@@ -276,8 +284,11 @@ class Validator {
   readonly identities = new Identities();
   readonly effectChecked = new Set<string>();
   readonly receiveOwners = new Map<string, string>();
-  constructor(readonly device?: DeviceIR) {
-    const cached = device && deviceIndexes.get(device);
+  constructor(
+    readonly device?: DeviceIR,
+    previous?: DeclarationIndex,
+  ) {
+    const cached = previous ?? (device && deviceIndexes.get(device));
     this.index = cached ?? new DeclarationIndex();
     if (!device || cached) return;
     const { declarations, paths, enums, records, functions } = this.index;
@@ -1300,16 +1311,39 @@ class Validator {
     });
     return deps;
   }
-  validateDevice(): void {
+  validateCallGraph(functions: Iterable<FunctionDeclaration>): void {
     const graph = new Map<string, Set<string>>();
-    for (const [name, fn] of this.functions) {
+    for (const fn of functions) {
       const targets = new Set<string>();
       walk(fn.body, (op) => {
         if (op.kind === 'call' || op.kind === 'callValue') targets.add(op.name);
       });
-      graph.set(name, targets);
+      graph.set(fn.name, targets);
     }
     this.cycle(graph, 'Synchronous call');
+  }
+  validateFunction(d: FunctionDeclaration, p: InputPath): void {
+    this.uniqueNames(
+      d.params.map((param) => param.name),
+      [...p, 'params'],
+    );
+    d.params.forEach((param, j) => {
+      if (this.declarations.has(param.name))
+        this.error('IR_REFERENCE', 'A parameter cannot shadow a device member.', [
+          ...p,
+          'params',
+          j,
+        ]);
+      if (!(param.type.kind === 'pin' || param.type.kind === 'memory'))
+        this.type(param.type as VType, [...p, 'params', j, 'type']);
+    });
+    if (d.returns) this.type(d.returns, [...p, 'returns']);
+    const c = this.context(d.pure ? 'pure' : 'sync', d.returns);
+    c.params = d.params;
+    this.body(d.body, c, [...p, 'body']);
+  }
+  validateDevice(): void {
+    this.validateCallGraph(this.functions.values());
     const creationGraph = new Map<string, Set<string>>(),
       derivedGraph = new Map<string, Set<string>>();
     this.device!.declarations.forEach((d, i) => {
@@ -1356,24 +1390,7 @@ class Validator {
             'overflow',
           ]);
       } else if (d.kind === 'function') {
-        this.uniqueNames(
-          d.params.map((param) => param.name),
-          [...p, 'params'],
-        );
-        d.params.forEach((param, j) => {
-          if (this.declarations.has(param.name))
-            this.error('IR_REFERENCE', 'A parameter cannot shadow a device member.', [
-              ...p,
-              'params',
-              j,
-            ]);
-          if (!(param.type.kind === 'pin' || param.type.kind === 'memory'))
-            this.type(param.type as VType, [...p, 'params', j, 'type']);
-        });
-        if (d.returns) this.type(d.returns, [...p, 'returns']);
-        const c = this.context(d.pure ? 'pure' : 'sync', d.returns);
-        c.params = d.params;
-        this.body(d.body, c, [...p, 'body']);
+        this.validateFunction(d, p);
       } else if (d.kind === 'start' || d.kind === 'on') {
         if (d.kind === 'on') this.source(d.sourcePath, [...p, 'sourcePath'], true);
         this.body(d.body, this.context('process'), [...p, 'body']);
@@ -1639,6 +1656,72 @@ export function validateDeviceIR(input: unknown): DeviceIR {
     return locateError(error, captured);
   }
 }
+
+/**
+ * Bind a JIT-local function table to a validated device. The base can only refer
+ * to its existing names, so the extension can reuse its frozen declarations.
+ */
+export function validateJitFunctions(
+  device: DeviceIR,
+  functions: readonly FunctionDeclaration[],
+): DeviceIR {
+  const base = validateDeviceIR(device);
+  if (functions.length === 0) return base;
+
+  try {
+    const extension = validateJitFunctionExtension(base, functions);
+    if (extension !== undefined) return extension;
+  } catch (error) {
+    if (!(error instanceof BuildError)) throw error;
+  }
+  // Keep diagnostic precedence and absolute paths from the full-device validator.
+  return validateDeviceIR({ ...base, declarations: base.declarations.concat(functions) });
+}
+
+function validateJitFunctionExtension(
+  base: DeviceIR,
+  functions: readonly FunctionDeclaration[],
+): DeviceIR | undefined {
+  const extension = snapshot({ kind: 'device', name: base.name, declarations: functions });
+  deviceSchema(extension);
+  const added = extension.declarations;
+  if (!added.every((entry) => entry.kind === 'function')) return undefined;
+
+  const index = new DeclarationIndex(deviceIndexes.get(base));
+  const model: DeviceIR = Object.freeze({
+    ...base,
+    declarations: Object.freeze(base.declarations.concat(added)),
+  });
+  const validator = new Validator(model, index);
+  const names = new Set<string>();
+  for (const [i, fn] of added.entries()) {
+    const path = ['declarations', base.declarations.length + i];
+    validator.name(fn.name, [...path, 'name']);
+    if (index.declarations.has(fn.name)) return undefined;
+    index.declarations.set(fn.name, fn);
+    index.paths.set(fn.name, path);
+    index.functions.set(fn.name, fn);
+    names.add(fn.name);
+  }
+  // Appended names can make an existing parameter or reaction binding illegal.
+  for (const declaration of base.declarations) {
+    if (declaration.kind === 'function' && declaration.params.some(({ name }) => names.has(name)))
+      return undefined;
+    if (
+      declaration.kind === 'reaction' &&
+      (names.has(declaration.previous) ||
+        names.has(declaration.current) ||
+        declaration.captures.some(({ name }) => names.has(name)))
+    )
+      return undefined;
+  }
+  validator.validateCallGraph(added);
+  for (const fn of added) validator.validateFunction(fn, index.paths.get(fn.name)!);
+  deviceIndexes.set(model, index);
+  remember(validatedDevices, model, model);
+  return model;
+}
+
 function capturedBlock(input: unknown): BlockIR {
   const captured = snapshot(input);
   try {

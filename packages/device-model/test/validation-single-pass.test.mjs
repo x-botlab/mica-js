@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateBlockIR, validateBoundBlockIR, validateDeviceIR } from '../dist/index.js';
+import {
+  validateBlockIR,
+  validateBoundBlockIR,
+  validateDeviceIR,
+  validateJitFunctions,
+} from '../dist/index.js';
 
 const numberType = { kind: 'number' },
   boolType = { kind: 'bool' },
@@ -74,6 +79,65 @@ const device = () => ({
       body: { operations: [] },
     },
   ],
+});
+
+const jitFunction = (name, operations = []) => ({
+  kind: 'function',
+  name,
+  pure: false,
+  params: [],
+  body: { operations },
+});
+
+test('only the JIT-local declarations need a new device snapshot', () => {
+  const base = validateDeviceIR(device());
+  const helper = jitFunction('helper', [
+    constant(0, numberType, 3),
+    { kind: 'call', name: 'f', pure: false, args: [{ kind: 'value', value: 0 }] },
+  ]);
+  const extended = validateJitFunctions(base, [helper]);
+  for (const [i, declaration] of base.declarations.entries())
+    assert.equal(extended.declarations[i], declaration);
+  assert.equal(validateDeviceIR(extended), extended);
+  const caller = block([{ kind: 'call', name: 'helper', pure: false, args: [] }]);
+  assert.doesNotThrow(() => validateBoundBlockIR(caller, extended));
+  assert.throws(() => validateBoundBlockIR(caller, base));
+  helper.body.operations.length = 0;
+  assert.equal(extended.declarations.at(-1).body.operations.length, 2);
+});
+
+test('JIT extension keeps full-device diagnostics for the new declarations and base bindings', () => {
+  const input = device();
+  input.declarations.push({
+    kind: 'reaction',
+    name: 'watch',
+    sourcePath: ['s'],
+    sourceType: numberType,
+    previous: 'prior',
+    current: 'current',
+    captures: [],
+    body: { operations: [] },
+  });
+  const base = validateDeviceIR(input);
+  for (const additions of [
+    [jitFunction('s')], // Duplicate member.
+    [jitFunction('n')], // Shadows a parameter of a base function.
+    [jitFunction('prior')], // Shadows a base reaction binding.
+    [jitFunction('helper', [{ kind: 'call', name: 'missing', pure: false, args: [] }])],
+    [
+      jitFunction('left', [{ kind: 'call', name: 'right', pure: false, args: [] }]),
+      jitFunction('right', [{ kind: 'call', name: 'left', pure: false, args: [] }]),
+    ],
+    [{ ...jitFunction('malformed'), body: { operations: [{ kind: 'unknown' }] } }],
+  ]) {
+    const full = diagnostic(() =>
+      validateDeviceIR({ ...base, declarations: [...base.declarations, ...additions] }),
+    );
+    assert.deepEqual(
+      diagnostic(() => validateJitFunctions(base, additions)),
+      full,
+    );
+  }
 });
 
 test('枚举 match 无默认分支仍由独立校验拒绝，绑定校验不因器件成员而放宽', () => {
