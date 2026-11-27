@@ -3998,11 +3998,22 @@ class Instruction {
 interface PreparedTiming {
   readonly elapsed: number;
   readonly deadline: number;
-  readonly blocked: string | undefined;
+  readonly blocked: TimingGuard | undefined;
 }
 
-type LoopTail =
-  { readonly kind: 'preserve' } | { readonly kind: 'accumulate'; readonly accumulator: number };
+interface TimingGuard {
+  readonly name: string;
+  readonly target: string;
+  readonly states: ReadonlySet<number>;
+  readonly memories: ReadonlySet<number>;
+}
+
+interface TimingWrite {
+  readonly kind: 'accumulate' | 'tick';
+  readonly accumulator: number;
+}
+
+type LoopTail = { readonly kind: 'preserve' } | TimingWrite;
 
 /** A proven self-jump; the session turns it into an entry guard wrapper. */
 interface LoopPlan {
@@ -4016,9 +4027,14 @@ interface LoopPlan {
 }
 
 /** A proven fused span; `prefix` excludes the terminal member. */
+interface SpanMember {
+  readonly instruction: Instruction;
+  readonly tail: TimingWrite | undefined;
+}
+
 interface SpanPlan {
   readonly pcs: readonly number[];
-  readonly prefix: readonly Instruction[];
+  readonly prefix: readonly SpanMember[];
   readonly terminal: Instruction;
   readonly duration: number;
   readonly timing: PreparedTiming | undefined;
@@ -4113,7 +4129,7 @@ function spanStepSource(
   host: boolean,
 ): string {
   const pcIndex = binding.pc.index;
-  const slots = maxSlots([...plan.prefix, plan.terminal]);
+  const slots = maxSlots([...plan.prefix.map((member) => member.instruction), plan.terminal]);
   const lines = [
     `function stepSpan${id}(F, deadline, pc) {`,
     ...prelude(registersOf(slots)),
@@ -4126,7 +4142,7 @@ function spanStepSource(
       'if (!(typeof spanElapsed === "number" && Number.isSafeInteger(spanElapsed) && spanElapsed >= 0 && typeof spanDeadline === "number" && Number.isSafeInteger(spanDeadline) && spanDeadline >= 0)) return NORMAL(F, deadline, pc);',
     );
     if (timing.blocked !== undefined)
-      lines.push(`if (${timing.blocked}(F)) return NORMAL(F, deadline, pc);`);
+      lines.push(`if (${timing.blocked.target}(F)) return NORMAL(F, deadline, pc);`);
     lines.push(
       'let spanLimit = deadline;',
       'if (spanDeadline > 0) {',
@@ -4136,6 +4152,10 @@ function spanStepSource(
       'if (spanAbsolute < spanLimit) spanLimit = spanAbsolute;',
       '}',
     );
+    if (plan.prefix.some((member) => member.tail !== undefined))
+      lines.push(
+        `if (!Number.isSafeInteger(spanElapsed + ${plan.duration})) return NORMAL(F, deadline, pc);`,
+      );
   } else {
     lines.push('const spanLimit = deadline;');
   }
@@ -4144,7 +4164,7 @@ function spanStepSource(
     `if (!(F.time + ${plan.duration} < spanLimit)) return NORMAL(F, deadline, pc);`,
   );
   lines.push('if (F.directMetrics) F.directMetrics.spanRuns++;', 'COUNT.spanRuns++;');
-  plan.prefix.forEach((member, index) => {
+  plan.prefix.forEach(({ instruction: member, tail }, index) => {
     lines.push(
       `S[${pcIndex}] = ${member.nextPc};`,
       dirty('SD', pcIndex),
@@ -4152,7 +4172,9 @@ function spanStepSource(
       `F.due = F.time + ${member.duration};`,
       `if (F.due > ${MAX_TIME}) throw new RangeError("Time out of range");`,
       'F.time = F.due;',
-      ...renameLabels(member.suffix, `s${id}_${index}`),
+      ...(tail === undefined
+        ? renameLabels(member.suffix, `s${id}_${index}`)
+        : timingWriteLines(tail, `S[${tail.accumulator}]`, member.duration!, 'spanDeadline')),
     );
   });
   const terminal = plan.terminal;
@@ -4194,7 +4216,7 @@ function loopFoldLines(plan: LoopPlan): string[] {
   const lines: string[] = [];
   const timing = plan.timing;
   const decrement = plan.kind === 'decrement8';
-  const accumulator = plan.tail.kind === 'accumulate' ? plan.tail.accumulator : undefined;
+  const tail = plan.tail.kind === 'preserve' ? undefined : plan.tail;
   const close: string[] = [];
   if (timing !== undefined) {
     lines.push(
@@ -4209,7 +4231,8 @@ function loopFoldLines(plan: LoopPlan): string[] {
       'if (Number.isSafeInteger(foldAbsolute)) { if (foldAbsolute < foldLimit) foldLimit = foldAbsolute; } else foldTimingOk = false;',
       '}',
     );
-    if (timing.blocked !== undefined) lines.push(`if (foldTimingOk && !${timing.blocked}(F)) {`);
+    if (timing.blocked !== undefined)
+      lines.push(`if (foldTimingOk && !${timing.blocked.target}(F)) {`);
     else lines.push('if (foldTimingOk) {');
     close.push('}', '}', '}');
   } else {
@@ -4245,7 +4268,8 @@ function loopFoldLines(plan: LoopPlan): string[] {
     const index = plan.memoryIndex!;
     eligibility.push(`!(BM[${index >>> 5}] & ${(1 << (index & 31)) >>> 0})`);
   }
-  if (accumulator !== undefined) {
+  if (tail !== undefined) {
+    const accumulator = tail.accumulator;
     eligibility.push(
       `Number.isSafeInteger(foldElapsed + ${delta})`,
       `foldElapsed + ${delta} <= ${MAX_TIME}`,
@@ -4265,9 +4289,8 @@ function loopFoldLines(plan: LoopPlan): string[] {
     'F.due = F.time;',
     `if (F.time > ${MAX_TIME}) throw new RangeError("Time out of range");`,
   );
-  if (accumulator !== undefined) {
-    lines.push(`S[${accumulator}] = foldElapsed + foldDelta;`, dirty('SD', accumulator));
-  }
+  if (tail !== undefined)
+    lines.push(...timingWriteLines(tail, 'foldElapsed', 'foldDelta', 'foldDeadline'));
   lines.push(
     'if (F.directMetrics) F.directMetrics.loopRounds += rounds;',
     'COUNT.loopRounds += rounds;',
@@ -4275,6 +4298,17 @@ function loopFoldLines(plan: LoopPlan): string[] {
     ...close,
   );
   return lines;
+}
+
+function timingWriteLines(
+  tail: TimingWrite,
+  elapsed: string,
+  delta: string,
+  deadline: string,
+): string[] {
+  const added = `${elapsed} + ${delta}`;
+  const value = tail.kind === 'tick' ? `${deadline} > 0 ? ${added} : 0` : added;
+  return [`S[${tail.accumulator}] = ${value};`, dirty('SD', tail.accumulator)];
 }
 
 /** Constant integer value of a result after the reference analyzer's propagation. */
@@ -4345,24 +4379,25 @@ const spanPrefixKinds = new Set<OperationIR['kind']>([
 
 /** The canonical IR proof for every non-terminal member of a span. */
 function spanPrefixProof(
-  body: RegionIR,
+  operations: readonly OperationIR[],
+  constants: ReadonlyMap<number, Primitive>,
   binding: DirectJitBinding,
   timing: PreparedTiming | undefined,
 ): boolean {
-  const constants = constantsOf(body);
   const timingSlots =
     timing === undefined ? undefined : new Set<number>([timing.elapsed, timing.deadline]);
   let elapsed = 0;
-  for (const operation of body.operations) {
+  for (const operation of operations) {
     if (!spanPrefixKinds.has(operation.kind)) return false;
     switch (operation.kind) {
       case 'write': {
         const index = binding.states.get(operation.name);
         if (!validIndex(index)) return false;
-        if (operation.name === binding.pc.name) return false;
+        if (index === binding.pc.index) return false;
         if (binding.entryBlockedStates?.has(operation.name)) return false;
         if (binding.blockedStates?.has(operation.name)) return false;
         if (timingSlots?.has(index)) return false;
+        if (timing?.blocked?.states.has(index)) return false;
         break;
       }
       case 'load8':
@@ -4376,7 +4411,9 @@ function spanPrefixProof(
       case 'store32le':
       case 'store32be': {
         const name = memoryName(operation.memory);
-        if (name === undefined || !binding.memories.has(name)) return false;
+        if (name === undefined) return false;
+        const index = binding.memories.get(name);
+        if (!validIndex(index)) return false;
         const offset = constantNumber(constants, operation.offset);
         if (offset === undefined) return false;
         if (!memoryInRange(binding, name, offset, memoryWidth(operation.kind))) return false;
@@ -4384,6 +4421,7 @@ function spanPrefixProof(
           if (binding.codeMemories?.has(name)) return false;
           if (binding.entryBlockedMemories?.has(name)) return false;
           if (binding.blockedMemories?.has(name)) return false;
+          if (timing?.blocked?.memories.has(index)) return false;
         }
         break;
       }
@@ -4438,6 +4476,100 @@ function timingTailProof(
     (add.right === read.result && constantNumber(constants, add.left) === duration)
   )
     return { kind: 'accumulate', accumulator: timing.elapsed };
+  return undefined;
+}
+
+function yieldsValue(operations: readonly OperationIR[], value: number): boolean {
+  const [operation] = operations;
+  return operations.length === 1 && operation?.kind === 'yield' && operation.value === value;
+}
+
+/** Prove the arm taken while the registered guard is false and a round ends before service. */
+function guardedTimingTail(
+  operations: readonly OperationIR[],
+  timing: PreparedTiming | undefined,
+  binding: DirectJitBinding,
+  constants: ReadonlyMap<number, Primitive>,
+  duration: number,
+): TimingWrite | undefined {
+  const guard = timing?.blocked;
+  if (
+    timing === undefined ||
+    guard === undefined ||
+    timing.elapsed === timing.deadline ||
+    timing.elapsed === binding.pc.index ||
+    timing.deadline === binding.pc.index ||
+    guard.states.has(binding.pc.index) ||
+    guard.states.has(timing.elapsed)
+  )
+    return undefined;
+
+  const [elapsed, deadline, active, pending, due, blocked, slow, branch, extra] = operations.filter(
+    (operation) => operation.kind !== 'constant' || operation.constant.kind !== 'number',
+  );
+  if (
+    extra !== undefined ||
+    elapsed?.kind !== 'read' ||
+    elapsed.resource !== 'state' ||
+    binding.states.get(elapsed.name) !== timing.elapsed ||
+    deadline?.kind !== 'read' ||
+    deadline.resource !== 'state' ||
+    binding.states.get(deadline.name) !== timing.deadline ||
+    active?.kind !== 'binary' ||
+    active.operator !== 'notEqual' ||
+    active.left !== deadline.result ||
+    constantNumber(constants, active.right) !== 0 ||
+    pending?.kind !== 'binary' ||
+    pending.operator !== 'add' ||
+    pending.left !== elapsed.result ||
+    constantNumber(constants, pending.right) !== duration ||
+    due?.kind !== 'and' ||
+    due.left !== active.result ||
+    blocked?.kind !== 'callValue' ||
+    !blocked.pure ||
+    blocked.name !== guard.name ||
+    blocked.args.length !== 0 ||
+    slow?.kind !== 'or' ||
+    slow.left !== blocked.result ||
+    !yieldsValue(slow.right.body.operations, due.result) ||
+    branch?.kind !== 'if' ||
+    branch.condition !== slow.result ||
+    branch.no === undefined
+  )
+    return undefined;
+
+  const [comparison, result] = due.right.body.operations;
+  if (
+    due.right.body.operations.length !== 2 ||
+    comparison?.kind !== 'binary' ||
+    comparison.operator !== 'greaterThanOrEqual' ||
+    comparison.left !== pending.result ||
+    comparison.right !== deadline.result ||
+    result?.kind !== 'yield' ||
+    result.value !== comparison.result
+  )
+    return undefined;
+
+  const quiet = branch.no.operations;
+  const write = quiet.at(-1);
+  if (write?.kind !== 'write' || binding.states.get(write.name) !== timing.elapsed)
+    return undefined;
+  if (quiet.length === 1 && write.value === pending.result)
+    return { kind: 'accumulate', accumulator: timing.elapsed };
+
+  const [choose] = quiet;
+  const zero = choose?.kind === 'select' ? choose.no.body.operations[0] : undefined;
+  if (
+    quiet.length === 2 &&
+    choose?.kind === 'select' &&
+    choose.condition === active.result &&
+    write.value === choose.result &&
+    yieldsValue(choose.yes.body.operations, pending.result) &&
+    zero?.kind === 'yield' &&
+    Object.is(constantNumber(constants, zero.value), 0) &&
+    yieldsValue(choose.no.body.operations, zero.value)
+  )
+    return { kind: 'tick', accumulator: timing.elapsed };
   return undefined;
 }
 
@@ -4537,43 +4669,47 @@ function minusOneBase(
   constants: ReadonlyMap<number, Primitive>,
   operations: ReadonlyMap<number, OperationIR>,
 ): number | undefined {
-  const operation = operations.get(id);
+  let operation = operations.get(id);
   if (operation?.kind !== 'binary' || operation.operator !== 'bitAnd') return undefined;
-  const leftMask = constantNumber(constants, operation.left);
-  const rightMask = constantNumber(constants, operation.right);
-  const subtractId =
-    leftMask === 255 ? operation.right : rightMask === 255 ? operation.left : undefined;
-  if (subtractId === undefined) return undefined;
-  const subtract = operations.get(subtractId);
-  if (subtract?.kind !== 'binary' || subtract.operator !== 'subtract') return undefined;
-  if (constantNumber(constants, subtract.right) !== 1) return undefined;
-  if (constantNumber(constants, subtract.left) !== undefined) return undefined;
-  return subtract.left;
+  // Byte-oriented stores can mask the already wrapped decrement a second time.
+  while (operation.kind === 'binary' && operation.operator === 'bitAnd') {
+    const leftMask = constantNumber(constants, operation.left);
+    const rightMask = constantNumber(constants, operation.right);
+    const input =
+      leftMask === 255 ? operation.right : rightMask === 255 ? operation.left : undefined;
+    if (input === undefined) return undefined;
+    operation = operations.get(input);
+    if (operation === undefined) return undefined;
+  }
+  if (operation.kind !== 'binary' || operation.operator !== 'subtract') return undefined;
+  if (constantNumber(constants, operation.right) !== 1) return undefined;
+  if (constantNumber(constants, operation.left) !== undefined) return undefined;
+  return operation.left;
 }
 
 type ZeroTest = 'nonZero' | 'zero';
 
 function zeroTest(
   id: number,
-  counter: number,
+  counterLoad: number,
   constants: ReadonlyMap<number, Primitive>,
   operations: ReadonlyMap<number, OperationIR>,
 ): ZeroTest | undefined {
   const operation = operations.get(id);
   if (operation === undefined) return undefined;
   if (operation.kind === 'unary' && operation.operator === 'not') {
-    const inner = zeroTest(operation.value, counter, constants, operations);
+    const inner = zeroTest(operation.value, counterLoad, constants, operations);
     return inner === undefined ? undefined : inner === 'zero' ? 'nonZero' : 'zero';
   }
   if (operation.kind !== 'binary') return undefined;
   const left = constantNumber(constants, operation.left);
   const right = constantNumber(constants, operation.right);
-  if (operation.left === counter && right === 0) {
+  if (right === 0 && minusOneBase(operation.left, constants, operations) === counterLoad) {
     if (operation.operator === 'notEqual' || operation.operator === 'greaterThan') return 'nonZero';
     if (operation.operator === 'equal') return 'zero';
     return undefined;
   }
-  if (operation.right === counter && left === 0) {
+  if (left === 0 && minusOneBase(operation.right, constants, operations) === counterLoad) {
     if (operation.operator === 'notEqual' || operation.operator === 'lessThan') return 'nonZero';
     if (operation.operator === 'equal') return 'zero';
     return undefined;
@@ -4641,7 +4777,11 @@ function sameOptimizationPlan(left: LoopPlan | SpanPlan, right: LoopPlan | SpanP
       a.terminal === b.terminal &&
       a.timing === b.timing &&
       a.prefix.length === b.prefix.length &&
-      a.prefix.every((entry, index) => entry === b.prefix[index]) &&
+      a.prefix.every(
+        (entry, index) =>
+          entry.instruction === b.prefix[index]!.instruction &&
+          entry.tail?.kind === b.prefix[index]!.tail?.kind,
+      ) &&
       a.pcs.length === b.pcs.length &&
       a.pcs.every((entry, index) => entry === b.pcs[index]) &&
       a.barrier.length === b.barrier.length &&
@@ -4801,13 +4941,10 @@ function spinProof(
     sawTarget = true;
   }
   if (!sawTarget || duration === undefined) return undefined;
-  const tail = timingTailProof(
-    body.operations.slice(terminator + 1),
-    timing,
-    binding,
-    constants,
-    duration,
-  );
+  const suffix = body.operations.slice(terminator + 1);
+  const tail =
+    timingTailProof(suffix, timing, binding, constants, duration) ??
+    guardedTimingTail(suffix, timing, binding, constants, duration);
   if (tail === undefined) return undefined;
   return {
     kind: 'spin',
@@ -4924,7 +5061,7 @@ function decrementProof(
     }
     if (operation.kind === 'if') {
       if (conditional) return undefined;
-      const test = zeroTest(operation.condition, storeOperation.value, constants, operations);
+      const test = zeroTest(operation.condition, counter, constants, operations);
       if (test === undefined) return undefined;
       const yes = branchAction(
         operation.yes,
@@ -4960,13 +5097,12 @@ function decrementProof(
     if (!pure.has(operation.kind)) return undefined;
   }
   if (!conditional) return undefined;
-  const tail = timingTailProof(
-    body.operations.slice(elapseIndex + 1),
-    timing,
-    binding,
-    constants,
-    duration,
-  );
+  const suffix = body.operations.slice(elapseIndex + 1);
+  const tail =
+    timingTailProof(suffix, timing, binding, constants, duration) ??
+    (timing?.blocked?.memories.has(memoryIndex)
+      ? undefined
+      : guardedTimingTail(suffix, timing, binding, constants, duration));
   if (tail === undefined) return undefined;
   return {
     kind: 'decrement8',
@@ -5427,7 +5563,7 @@ class DirectJitSessionImpl implements DirectJitSession {
       this.timingValid = false;
       return;
     }
-    let blocked: string | undefined;
+    let blocked: TimingGuard | undefined;
     if (timing.blocked !== undefined) {
       blocked = this.guardTarget(timing.blocked);
       if (blocked === undefined) {
@@ -5453,7 +5589,7 @@ class DirectJitSessionImpl implements DirectJitSession {
   }
 
   /** Compile a zero-argument pure bool function and return its captured call target. */
-  private guardTarget(name: string): string | undefined {
+  private guardTarget(name: string): TimingGuard | undefined {
     const fn = this.binding.functions?.get(name);
     if (
       fn === undefined ||
@@ -5479,8 +5615,19 @@ class DirectJitSessionImpl implements DirectJitSession {
       effects.random
     )
       return undefined;
-    for (const read of effects.reads)
-      if (!read.startsWith('state:') && !read.startsWith('memory:')) return undefined;
+    const states = new Set<number>();
+    const memories = new Set<number>();
+    for (const read of effects.reads) {
+      if (read.startsWith('state:')) {
+        const index = this.binding.states.get(read.slice('state:'.length));
+        if (!validIndex(index)) return undefined;
+        states.add(index);
+      } else if (read.startsWith('memory:')) {
+        const index = this.binding.memories.get(read.slice('memory:'.length));
+        if (!validIndex(index)) return undefined;
+        memories.add(index);
+      } else return undefined;
+    }
     if (!guardRegion(fn.body, this.binding, analysis.constants)) return undefined;
     try {
       const compiled = this.resolveFunction(name, this.resistorSlotFor.bind(this));
@@ -5492,7 +5639,7 @@ class DirectJitSessionImpl implements DirectJitSession {
         compiled.body.isolated
       )
         return undefined;
-      return compiled.target;
+      return { name, target: compiled.target, states, memories };
     } catch {
       return undefined;
     }
@@ -5539,7 +5686,8 @@ class DirectJitSessionImpl implements DirectJitSession {
     )
       return undefined;
     const pcs = record.span.pcs;
-    const members: { record: CachedInstruction; instruction: Instruction }[] = [];
+    const prefix: SpanMember[] = [];
+    let terminal: Instruction | undefined;
     let duration = 0;
     for (let index = 0; index < pcs.length; index++) {
       const memberPc = pcs[index]!;
@@ -5562,9 +5710,32 @@ class DirectJitSessionImpl implements DirectJitSession {
           return undefined;
         const memberDuration = Number(instruction.duration);
         if (!Number.isSafeInteger(memberDuration) || memberDuration <= 0) return undefined;
-        if (!spanPrefixProof(memberRecord.body, this.binding, this.timing)) return undefined;
+        const { operations } = memberRecord.body;
+        const constants = constantsOf(memberRecord.body);
+        let tail: TimingWrite | undefined;
+        if (!spanPrefixProof(operations, constants, this.binding, this.timing)) {
+          const elapse = operations.findIndex((operation) => operation.kind === 'elapse');
+          if (
+            elapse < 0 ||
+            !spanPrefixProof(operations.slice(0, elapse + 1), constants, this.binding, this.timing)
+          )
+            return undefined;
+          tail = guardedTimingTail(
+            operations.slice(elapse + 1),
+            this.timing,
+            this.binding,
+            constants,
+            memberDuration,
+          );
+          if (tail === undefined) return undefined;
+          for (const [name, slot] of this.binding.states) {
+            if (slot === tail.accumulator && this.binding.blockedStates?.has(name))
+              return undefined;
+          }
+        }
         if (!Number.isSafeInteger(duration + memberDuration)) return undefined;
         duration += memberDuration;
+        prefix.push({ instruction, tail });
       } else {
         const writesState = [...instruction.writeStates].some(
           (name) => name !== this.binding.pc.name,
@@ -5576,11 +5747,11 @@ class DirectJitSessionImpl implements DirectJitSession {
           (!writesState && instruction.writeMemories.size === 0)
         )
           return undefined;
+        terminal = instruction;
       }
-      members.push({ record: memberRecord, instruction });
     }
-    const prefix = members.slice(0, -1).map((member) => member.instruction);
-    const terminal = members[members.length - 1]!.instruction;
+    if (terminal === undefined) return undefined;
+    const entries = prefix.map((member) => member.instruction);
     return {
       pcs,
       prefix,
@@ -5588,8 +5759,8 @@ class DirectJitSessionImpl implements DirectJitSession {
       duration,
       timing: this.timing,
       barrier: [
-        ...barrierWords(prefix, 'writeStates', this.binding.states, 'BS'),
-        ...barrierWords(prefix, 'writeMemories', this.binding.memories, 'BM'),
+        ...barrierWords(entries, 'writeStates', this.binding.states, 'BS'),
+        ...barrierWords(entries, 'writeMemories', this.binding.memories, 'BM'),
       ],
     };
   }
