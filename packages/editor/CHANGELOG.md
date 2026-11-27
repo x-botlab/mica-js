@@ -1,5 +1,11 @@
 # @mica-js/editor
 
+## 0.9.0
+
+### Minor Changes
+
+- f6f2f96: 工作台运行态主按钮改为「停止」，点击后结束仿真并返回编辑；原来的「复位」按钮改为「重启」，从捕获的字节重建运行时并继续运行。新增 `simulation.restart` 命令。
+
 ## 0.8.4
 
 ### Patch Changes
