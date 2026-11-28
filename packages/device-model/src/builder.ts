@@ -9,6 +9,7 @@ import type {
   TypeFactory,
 } from './builder-types.js';
 import type {
+  BlockIR,
   ComputationIR,
   ConstantIR,
   DeclarationIR,
@@ -31,6 +32,7 @@ import type { Node } from './schema.js';
 import { sameIR } from './structure.js';
 import {
   canonicalDeviceIR,
+  captureJitFunctionTable,
   indexedDeclarations,
   sameType,
   validateBlockIR,
@@ -1689,7 +1691,7 @@ export function buildJitFunctions(
     root.resolve();
     return canonicalJitFunctions(
       device,
-      snapshot(
+      captureJitFunctionTable(
         root.declarations.slice(device.declarations.length) as Extract<
           DeclarationIR,
           { kind: 'function' }
@@ -1716,18 +1718,19 @@ export function createJitBlockBuilder(options: JitBuilderOptions = {}): JitBlock
       get: (_target, method) =>
         typeof method === 'string'
           ? (...args: unknown[]) => {
-              if (method === 'finish') {
+              if (method === 'finish' || method === 'finishDraft') {
                 root.check();
                 if (state.closed) root.error('IR_LIFECYCLE', 'This source view is closed.');
                 if (root.active)
                   root.error('IR_SCOPE', 'Cannot finish a block inside an instruction callback.');
                 root.closed = true;
                 root.resolve();
-                const block = {
+                const block: BlockIR = {
                   kind: 'block',
                   instructions: root.instructions,
                   ...root.sourceFor(),
                 };
+                if (method === 'finishDraft') return block;
                 return options.device
                   ? validateBoundBlockIR(block, options.device)
                   : validateBlockIR(block);

@@ -22,7 +22,7 @@ import type {
   ResumePoint,
 } from './types.js';
 import { createBytes, createEnum, createRecord, runtimeHelpers } from './values.js';
-import { analyzeBody } from './analysis.js';
+import { analyzeBody, analyzeGenerator } from './analysis.js';
 import type { BodyAnalysis } from './analysis.js';
 import { layoutMetadata } from './metadata.js';
 import type { GeneratedTemporary } from './metadata.js';
@@ -65,7 +65,7 @@ const numberBuiltins = new Set(['isNaN', 'isFinite', 'isInteger', 'isSafeInteger
 
 /** Inputs must already have passed device-model validation and contextual binding. */
 export function compileBody(region: RegionIR, options: CompileOptions = {}): CompiledBody {
-  return new Emitter(analyzeBody(region, options, false), options, false).compileExecutable(region);
+  return new Emitter(analyzeGenerator(region, options), options, false).compileExecutable(region);
 }
 
 export function compileBodyArtifact(
@@ -316,9 +316,13 @@ export class Emitter {
     path: InputPath,
     output?: { slot: string; label: string },
   ): void {
-    region.operations.forEach((operation, index) => {
-      this.operation(operation, [...path, 'operations', index], output);
-    });
+    if (this.captureMetadata) {
+      region.operations.forEach((operation, index) => {
+        this.operation(operation, [...path, 'operations', index], output);
+      });
+    } else {
+      for (const operation of region.operations) this.operation(operation, path, output);
+    }
   }
 
   protected valueRegion(region: ValueRegionIR, slot: string, path: InputPath): void {

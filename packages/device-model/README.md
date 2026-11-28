@@ -32,7 +32,10 @@ Values, locals and resource references cannot cross independent bodies.
 
 Runtime integrations can use `createJitBlockBuilder({ device?, source? })` and
 `validateBoundBlockIR(block, device)` to validate resource names, signatures and
-transitive effects against a definition. Block validation does not establish
+transitive effects against a definition. A translator that rewrites a block can
+close the builder with `finishDraft()`, rewrite the draft, and return the result
+to the simulator for one full validation. `finishDraft()` returns an unfrozen
+draft without a validation stamp. Block validation does not establish
 runtime instance identity, entry generation or code-version ownership. Those checks
 remain the runtime's responsibility. Dynamic numeric bounds are checked when the
 corresponding IR operations execute.

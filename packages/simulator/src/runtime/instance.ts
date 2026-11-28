@@ -1642,6 +1642,7 @@ export class Instance {
       'codeMetadata',
       'pc',
       'functions',
+      'functionGroups',
       'beforeInstruction',
       'polling',
       'delays',
@@ -1729,22 +1730,38 @@ export class Instance {
     const emit = options.functions;
     if (Object.hasOwn(options, 'functions') && typeof emit !== 'function')
       throw new TypeError('functions must be a JIT function builder callback');
+    const groups = new Map<string, NonNullable<JitOptions['functions']>>();
+    if (Object.hasOwn(options, 'functionGroups')) {
+      const input = options.functionGroups;
+      dataObject(input);
+      for (const [name, factory] of Object.entries(input)) {
+        if (typeof factory !== 'function')
+          throw new TypeError(`Invalid JIT function group: ${name}`);
+        groups.set(name, factory);
+      }
+    }
     let model = base;
     let functions: Map<string, Decl<'function'>> | undefined;
     let host = this.host;
-    if (emit) {
-      const declarations = emit(base);
+    const append = (factory: NonNullable<JitOptions['functions']>) => {
+      const declarations = factory(model);
       acceptSync(declarations);
       if (!Array.isArray(declarations)) throw new TypeError('Expected JIT function declarations');
-      model = bindJitFunctions(base, declarations);
-      const local = new Map<string, Decl<'function'>>();
-      for (const declaration of model.declarations.slice(base.declarations.length))
+      const next = bindJitFunctions(model, declarations);
+      if (next === model) return;
+      const local = new Map(functions);
+      for (const declaration of next.declarations.slice(model.declarations.length))
         if (declaration.kind === 'function') local.set(declaration.name, declaration);
+      model = next;
       functions = local;
+      return local;
+    };
+    if (emit) append(emit);
+    if (emit || groups.size !== 0) {
       host = {
         ...this.host,
         call: (name, args) => {
-          const fn = local.get(name);
+          const fn = functions?.get(name);
           return fn ? body(fn.body)(host, args) : this.invoke(name, args);
         },
       };
@@ -1759,11 +1776,34 @@ export class Instance {
       ? this.captureDirectTier(options.directTier)
       : undefined;
     const artifactCache = resolveDirectArtifactCache(options.shareDirectArtifacts);
+    const loadedGroups = new Set<string>();
     const jit: Jit = {
       instance: this,
       model,
       host,
       ...(functions === undefined ? {} : { functions }),
+      ...(groups.size === 0
+        ? {}
+        : {
+            loadFunctionGroups: (names: readonly string[]) => {
+              for (const name of names) {
+                if (loadedGroups.has(name)) continue;
+                const factory = groups.get(name);
+                if (!factory) throw new TypeError(`Unknown JIT function group: ${name}`);
+                try {
+                  const appended = append(factory);
+                  if (appended !== undefined) {
+                    jit.model = model;
+                    jit.functions = appended;
+                    invalidateDirect(jit);
+                  }
+                } catch (cause) {
+                  throw new Error(`Failed to load JIT function group ${name}`, { cause });
+                }
+                loadedGroups.add(name);
+              }
+            },
+          }),
       options: Object.freeze({
         ...options,
         ...(options.codeRegions === undefined ? {} : { codeRegions: codeRegions.additional }),

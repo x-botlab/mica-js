@@ -543,6 +543,8 @@ export interface InstructionBoundary {
 export interface JitBlockBuilder extends SourceScope<JitBlockBuilder> {
   instruction(boundary: InstructionBoundary, emit: (body: JitInstructionBuilder) => void): void;
   finish(): BlockIR;
+  /** Close the builder without validating or freezing the draft. The final block must be validated before execution. */
+  finishDraft(): BlockIR;
 }
 /** Functions scoped to one JIT entry; no new device resources can be declared. */
 export type JitFunctionBuilder = Pick<DeviceBuilder, 'fn' | 'pureFn'>;

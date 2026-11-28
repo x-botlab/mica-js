@@ -394,6 +394,23 @@ test('validateBlockIR 与 validateBoundBlockIR 复用已校验的块与器件', 
   assert.ok(Object.isFrozen(first));
 });
 
+test('JIT 草稿允许先重写，绑定只接受合法的最终 IR', () => {
+  const definition = createDeviceBuilder({ name: 'Draft' });
+  definition.state({ name: 'finalState', type: types.number, initial: 0 });
+  const model = definition.finish();
+  const builder = createJitBlockBuilder();
+  builder.instruction({ pc: 0, nextPc: 1 }, (body) => body.writeState('draftState', 1));
+  const draft = builder.finishDraft();
+  assert.throws(() => builder.finish(), { name: 'BuildError' });
+  assert.throws(() => validateBoundBlockIR({ ...draft }, model), { name: 'BuildError' });
+
+  draft.instructions[0].body.operations.at(-1).name = 'finalState';
+  const bound = validateBoundBlockIR(draft, model);
+  assert.equal(bound.instructions[0].body.operations.at(-1).name, 'finalState');
+  assert.ok(Object.isFrozen(bound.instructions[0].body.operations.at(-1)));
+  assert.equal(validateBoundBlockIR(bound, model), bound);
+});
+
 test('声明索引只供对应器件复用，不跨器件共享绑定结果', () => {
   const buildDevice = (type, initial) => {
     const builder = createDeviceBuilder({ name: 'Node' });

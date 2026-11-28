@@ -1,9 +1,87 @@
-import { buildJitFunctions, createDeviceBuilder, types } from '@mica-js/device-model';
-import { expect, it } from 'vitest';
+import {
+  buildJitFunctions,
+  createDeviceBuilder,
+  types,
+  type DeviceIR,
+} from '@mica-js/device-model';
+import { expect, it, vi } from 'vitest';
 import { createBoard, createDeviceLibrary } from '../runtime';
 import type { Instance } from '../runtime/instance';
 import { directJitStats } from '../runtime/jit';
 import type { DeviceContext } from '../types';
+
+it.each(['precise', 'throughput'] as const)(
+  'loads helper groups on demand and keeps prior translated blocks executable (%s)',
+  (execution) => {
+    const model = createDeviceBuilder({ name: 'LazyJitFunctions' });
+    model.memory({ name: 'code', length: 3 });
+    model.state({ name: 'pc', type: types.number, initial: 0 });
+    model.state({ name: 'result', type: types.number, initial: 0 });
+    const add = vi.fn((base: DeviceIR) =>
+      buildJitFunctions(base, (f) => {
+        f.fn({ name: 'inc', params: [] }, (b) => {
+          b.writeState('result', b.add(b.readState('result', types.number), 1));
+        });
+      }),
+    );
+    const double = vi.fn((base: DeviceIR) =>
+      buildJitFunctions(base, (f) => {
+        f.fn({ name: 'incTwice', params: [] }, (b) => {
+          b.call('inc');
+          b.call('inc');
+        });
+      }),
+    );
+    const unused = vi.fn(() => {
+      throw new Error('The unused group must remain unloaded');
+    });
+    const library = createDeviceLibrary([
+      {
+        id: 'probe',
+        model: model.finish(),
+        create(context: DeviceContext) {
+          const registration = context.attachJit({
+            entry: 'cpu',
+            code: 'code',
+            pc: 'pc',
+            functionGroups: { add, double, unused },
+            translate(input, builder) {
+              const { pc } = input;
+              const block =
+                pc === 0 ? builder : input.withFunctions!('add', ...(pc === 2 ? ['double'] : []));
+              block.instruction({ pc, nextPc: (pc + 1) % 3 }, (b) => {
+                if (pc === 1) b.call('inc');
+                if (pc === 2) b.call('incTwice');
+                b.elapse(1);
+              });
+              return block.finish();
+            },
+          });
+          return { sync() {}, dispose: () => registration.dispose() };
+        },
+      },
+    ]);
+    const board = createBoard(
+      library,
+      { instances: [{ id: 'probe', type: 'probe' }], nets: [] },
+      { execution },
+    );
+    try {
+      expect(add).not.toHaveBeenCalled();
+      expect(double).not.toHaveBeenCalled();
+      for (let time = 1; time <= 12; time++) board.runUntil(time);
+      const instance = (board as unknown as { instances: Instance[] }).instances[0]!;
+      expect(instance.states.get('result')).toBe(12);
+      expect(add).toHaveBeenCalledTimes(1);
+      expect(double).toHaveBeenCalledTimes(1);
+      expect(unused).not.toHaveBeenCalled();
+      if (execution === 'throughput')
+        expect(directJitStats(instance.jits[0]!)?.directRoutes).toBe(3);
+    } finally {
+      board.dispose();
+    }
+  },
+);
 
 it.each(['precise', 'throughput'] as const)(
   'executes JIT-local functions on the current instruction state (%s)',
