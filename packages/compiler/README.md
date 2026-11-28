@@ -26,6 +26,8 @@ Generated bodies no longer reference their input IR.
 Direct JIT instruction compilation folds constants with the same rules as the
 general compiler, using a pass over the validated IR that skips the general
 compiler's analysis for suspension and dead values.
+Executable generator compilation omits source paths and suspension summaries.
+Artifact compilation preserves source paths and computes effect metadata on demand.
 
 `compileBody(fn.body)(host, args)` needs no function parameter declarations at
 compile time. Each value parameter is initialized by its explicit

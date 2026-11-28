@@ -178,13 +178,25 @@ export function argumentUses(op: OperationIR): readonly string[] {
 function resourceName(ref: { kind: string; name?: string; index?: number }): string {
   return ref.kind === 'parameter' ? `$${ref.index}` : ref.name!;
 }
+function canSuspend(kind: OperationIR['kind']): boolean {
+  switch (kind) {
+    case 'call':
+    case 'callValue':
+    case 'wait':
+    case 'elapse':
+    case 'receive':
+    case 'waitUntil':
+    case 'redirect':
+      return true;
+    default:
+      return false;
+  }
+}
 function effects(op: OperationIR): OperationEffects {
   const reads: string[] = [],
     writes: string[] = [],
     calls: string[] = [];
   const call = op.kind === 'call' || op.kind === 'callValue';
-  const maySuspend =
-    call || ['wait', 'elapse', 'receive', 'waitUntil', 'redirect'].includes(op.kind);
   const mayThrow =
     call ||
     [
@@ -244,7 +256,7 @@ function effects(op: OperationIR): OperationEffects {
     writes: Object.freeze(writes),
     calls: Object.freeze(calls),
     operations: Object.freeze([op.kind]),
-    maySuspend,
+    maySuspend: canSuspend(op.kind),
     mayThrow,
     mayRedirect: call || op.kind === 'redirect',
     mayStop: call || op.kind === 'stop',
@@ -256,8 +268,8 @@ function effects(op: OperationIR): OperationEffects {
 export function fold(
   op: OperationIR,
   known: ReadonlyMap<number, Primitive>,
+  values = inputs(op),
 ): { value: Primitive } | undefined {
-  const values = inputs(op);
   if (values.some((id) => !known.has(id))) return undefined;
   const a = known.get(values[0]!)!,
     b = known.get(values[1]!)!;
@@ -349,7 +361,7 @@ export function fold(
 function removable(
   op: OperationIR,
   types: ReadonlyMap<number, ValueTypeIR>,
-  folded: ReadonlyMap<number, Primitive>,
+  folded: boolean,
 ): boolean {
   switch (op.kind) {
     case 'constant':
@@ -362,7 +374,7 @@ function removable(
     case 'numeric':
       return true;
     case 'nonNull':
-      return folded.has(op.result);
+      return folded;
     case 'binary': {
       if (op.operator !== 'equal' && op.operator !== 'notEqual') return true;
       let type = types.get(op.left);
@@ -418,6 +430,13 @@ export function analyzeBody(
 ): BodyAnalysis {
   return new Analyzer(body, options.optimize !== false, metadata).analyze();
 }
+
+export function analyzeGenerator(body: RegionIR, options: CompileOptions): BodyAnalysis {
+  return new Analyzer(body, options.optimize !== false, false, true).analyze();
+}
+
+const emptyPath: InputPath = Object.freeze([]);
+
 class Analyzer {
   private readonly nodes: Node[] = [];
   private readonly regions: Region[] = [];
@@ -437,12 +456,13 @@ class Analyzer {
     body: RegionIR,
     private readonly optimize: boolean,
     private readonly metadata: boolean,
+    private readonly generatorOnly = false,
   ) {
     this.root = this.index(body, [], null, body.source);
     this.throwExit = this.block(0, 'throw');
     this.stopExit = this.block(0, 'stop');
     this.redirectExit = this.block(0, 'redirect');
-    this.resolveSuspends();
+    if (!generatorOnly) this.resolveSuspends();
   }
   /**
    * Nodes are appended parents first, so reverse order is bottom-up: every child summary
@@ -451,7 +471,7 @@ class Analyzer {
   private resolveSuspends(): void {
     for (let index = this.nodes.length - 1; index >= 0; index--) {
       const node = this.nodes[index]!;
-      let suspends = node.effects.maySuspend;
+      let suspends = canSuspend(node.operation.kind);
       for (const region of node.children.values())
         for (const child of region.nodes) if (child.suspends) suspends = true;
       node.suspends = suspends;
@@ -491,7 +511,7 @@ class Analyzer {
     const region: Region = {
       id,
       parent,
-      path: Object.freeze([...path]),
+      path: this.generatorOnly ? emptyPath : Object.freeze([...path]),
       entry: this.block(id, 'entry'),
       exit: this.block(id, 'exit'),
       nodes: [],
@@ -508,7 +528,7 @@ class Analyzer {
         block,
         definitionBlock: block,
         region: id,
-        path: Object.freeze([...path, 'operations', index]),
+        path: this.generatorOnly ? emptyPath : Object.freeze([...path, 'operations', index]),
         inputs: Object.freeze(inputs(operation)),
         get effects() {
           return (effectSummary ??= effects(operation));
@@ -526,7 +546,15 @@ class Analyzer {
         suffix: InputPath = [key],
         inherited = source,
       ): void => {
-        node.children.set(key, this.index(body, [...node.path, ...suffix], id, inherited));
+        node.children.set(
+          key,
+          this.index(
+            body,
+            this.generatorOnly ? emptyPath : [...node.path, ...suffix],
+            id,
+            inherited,
+          ),
+        );
       };
       switch (operation.kind) {
         case 'if':
@@ -701,50 +729,29 @@ class Analyzer {
     });
   }
   analyze(): BodyAnalysis {
-    const types = new Map<number, ValueTypeIR>();
-    for (const node of this.nodes)
-      if ('result' in node.operation) types.set(node.operation.result, node.operation.type);
     const known = new Map<number, Primitive>();
     if (this.optimize) {
+      const types = new Map<number, ValueTypeIR>();
       for (const node of this.nodes) {
         if (!('result' in node.operation)) continue;
-        const constant = fold(node.operation, known);
+        types.set(node.operation.result, node.operation.type);
+        const constant = fold(node.operation, known, node.inputs);
         if (constant) {
           known.set(node.operation.result, constant.value);
           if (node.operation.kind !== 'constant') this.folded.set(node.position, constant.value);
         }
       }
-      const foldedByResult = new Map<number, Primitive>();
-      for (const node of this.nodes)
-        if ('result' in node.operation && this.folded.has(node.position))
-          foldedByResult.set(node.operation.result, this.folded.get(node.position)!);
-      const definitions = new Map(
-        this.nodes.flatMap((node) =>
-          'result' in node.operation ? [[node.operation.result, node] as const] : [],
-        ),
-      );
       const required = new Set<number>();
-      const queue: number[] = [];
-      const require = (id: number): void => {
-        if (!required.has(id)) {
-          required.add(id);
-          queue.push(id);
-        }
-      };
       // Retain unknown inputs of even dead operations for baseline exit recovery.
       // Only known folded inputs can be discarded and reconstructed from recipes.
       for (const node of this.nodes) {
-        if (!this.folded.has(node.position)) node.inputs.forEach(require);
-      }
-      for (let i = 0; i < queue.length; i++) {
-        const node = definitions.get(queue[i]!);
-        if (node && !this.folded.has(node.position)) node.inputs.forEach(require);
+        if (!this.folded.has(node.position)) for (const id of node.inputs) required.add(id);
       }
       for (const node of this.nodes)
         if (
           'result' in node.operation &&
           !required.has(node.operation.result) &&
-          removable(node.operation, types, foldedByResult)
+          removable(node.operation, types, this.folded.has(node.position))
         )
           this.eliminated.add(node.position);
     }
