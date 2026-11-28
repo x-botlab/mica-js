@@ -73,6 +73,16 @@ describe('standalone content builds', () => {
     expect(widget.default).toBeTypeOf('function');
   });
 
+  it('minifies modules on request while keeping their exports', async () => {
+    const root = await fixture();
+    const files = await buildContent({ root, minify: true });
+    const source = files[1]!.source;
+    expect(source).not.toContain('\n');
+    const device = await load(source);
+    expect(device.model).toBeTypeOf('object');
+    expect(device.create).toBeTypeOf('function');
+  });
+
   it('provides a minimal adapter for pure DDL devices', async () => {
     const root = await fixture();
     await rm(resolve(root, 'src/devices/resistor/index.ts'));

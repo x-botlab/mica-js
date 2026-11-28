@@ -4,7 +4,12 @@ import { isBuiltin } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, parse, resolve } from 'node:path';
 import { build, normalizePath, type AliasOptions } from 'vite';
-import { assertSelfContained, modelExpression, stripModelSource } from './content.js';
+import {
+  assertSelfContained,
+  MINIFY_OUTPUT,
+  modelExpression,
+  stripModelSource,
+} from './content.js';
 import type { UnifiedDeviceManifest } from '@mica-js/document/fused';
 import type { LoadedDevicePackage } from './unified-manifest.js';
 import { readProgramDirectory } from '../fused/node.js';
@@ -361,7 +366,10 @@ async function bundleModule(
       lib: { entry, formats: ['es'], fileName: () => 'module.js' },
       rolldownOptions: {
         input: entry,
-        output: { codeSplitting: false },
+        output: {
+          codeSplitting: false,
+          ...(request.minify ? { minify: MINIFY_OUTPUT } : {}),
+        },
         onwarn(warning, warn) {
           if (warning.code === 'UNRESOLVED_IMPORT')
             throw new Error(`${request.label}: ${warning.message}`);
