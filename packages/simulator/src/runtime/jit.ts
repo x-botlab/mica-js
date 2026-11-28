@@ -2724,7 +2724,7 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
       if (batchMarks !== undefined) resolveBatchDirectConflicts(jit, instructions);
     }
     if (shareMarks !== undefined)
-      applyDirectShareMarks(jit, codeRegion, code.length, instructions, shareMarks);
+      applyDirectShareMarks(jit, codeRegion, bytes.length, instructions, shareMarks);
     // Check the old cache before publishing: an overlapping block can replace a routed body
     // instead of only adding PCs. Promotion identity is reconciled from the same snapshot.
     const oldEntries = new Map<number, JitInstruction>();
