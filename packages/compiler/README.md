@@ -23,6 +23,10 @@ Primitive constant pooling preserves signed zero, and known primitive equalities
 use direct strict comparisons. No effectful computation is reordered or eliminated.
 Generated bodies no longer reference their input IR.
 
+Direct JIT instruction compilation folds constants with the same rules as the
+general compiler, using a pass over the validated IR that skips the general
+compiler's analysis for suspension and dead values.
+
 `compileBody(fn.body)(host, args)` needs no function parameter declarations at
 compile time. Each value parameter is initialized by its explicit
 `{ kind: 'parameter', index, result, type }` operation, which reads `args[index]`.

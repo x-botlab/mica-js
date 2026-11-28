@@ -253,7 +253,7 @@ function effects(op: OperationIR): OperationEffects {
   });
 }
 
-function fold(
+export function fold(
   op: OperationIR,
   known: ReadonlyMap<number, Primitive>,
 ): { value: Primitive } | undefined {

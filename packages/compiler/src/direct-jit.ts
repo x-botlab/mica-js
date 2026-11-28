@@ -27,7 +27,7 @@ import type {
   DirectJitShareCandidate,
   DirectJitShareRejectedStats,
 } from './types.js';
-import { analyzeBody, type Primitive } from './analysis.js';
+import { analyzeBody, fold, type Primitive } from './analysis.js';
 import {
   checkBoolean,
   checkDuration,
@@ -219,44 +219,27 @@ const helpers = Object.freeze({
   store32,
 });
 const unsupported = Symbol('unsupported direct instruction');
-/**
- * Compile-time values the reference analyzer proved for one body. Folding is shared rather
- * than reimplemented: `analyzeBody` runs the exact arithmetic `compileBody` emits, so both
- * backends agree on every operator, including `-0`, `NaN`, `%` and the shifts.
- */
-const analyses = new WeakMap<RegionIR, ReadonlyMap<number, Primitive>>();
-
 function constantsOf(body: RegionIR): ReadonlyMap<number, Primitive> {
-  let constants = analyses.get(body);
-  if (constants === undefined) {
-    try {
-      constants = analyzeBody(body, {}, false).constants;
-    } catch {
-      // Analysis is an optimisation only: an unexpected shape keeps every value dynamic.
-      constants = new Map();
-    }
-    analyses.set(body, constants);
-  }
-  return constants;
+  return shapeOf(body).constants;
 }
 
 interface BodyShape {
   readonly operations: number;
   readonly nestedOperations: number;
+  readonly constants: ReadonlyMap<number, Primitive>;
 }
 
-/**
- * Operation counts depend only on the immutable body, so a later cache (a new board reusing
- * the module-level block IR) reuses them instead of walking every nested region again.
- */
+/** Counts and constant folding depend only on the immutable body. */
 const shapes = new WeakMap<RegionIR, BodyShape>();
 
 function shapeOf(body: RegionIR): BodyShape {
   let shape = shapes.get(body);
   if (shape === undefined) {
+    const constants = new Map<number, Primitive>();
     shape = Object.freeze({
       operations: body.operations.length,
-      nestedOperations: countOperations(body),
+      nestedOperations: analyzeRegion(body, constants),
+      constants,
     });
     shapes.set(body, shape);
   }
@@ -1778,32 +1761,42 @@ function emitStats(entries: readonly Instruction[]): DirectJitEmitStats {
   });
 }
 
-/** Every IR operation the emitter walks, nested value and statement regions included. */
-function countOperations(region: RegionIR): number {
+/** Count operations and fold validated values in the full analyzer's preorder. */
+function analyzeRegion(region: RegionIR, constants: Map<number, Primitive>): number {
   let total = 0;
   for (const operation of region.operations) {
     total++;
+    if ('result' in operation) {
+      const constant = fold(operation, constants);
+      if (constant !== undefined) constants.set(operation.result, constant.value);
+    }
     switch (operation.kind) {
       case 'if':
-        total += countOperations(operation.yes);
-        if (operation.no) total += countOperations(operation.no);
+        total += analyzeRegion(operation.yes, constants);
+        if (operation.no) total += analyzeRegion(operation.no, constants);
         break;
       case 'match':
-        for (const arm of operation.arms) total += countOperations(arm.body);
-        if (operation.otherwise) total += countOperations(operation.otherwise);
+        for (const arm of operation.arms) total += analyzeRegion(arm.body, constants);
+        if (operation.otherwise) total += analyzeRegion(operation.otherwise, constants);
         break;
       case 'select':
-        total += countOperations(operation.yes.body) + countOperations(operation.no.body);
+        total +=
+          analyzeRegion(operation.yes.body, constants) +
+          analyzeRegion(operation.no.body, constants);
         break;
       case 'and':
       case 'or':
-        total += countOperations(operation.right.body);
+        total += analyzeRegion(operation.right.body, constants);
         break;
       case 'while':
-        total += countOperations(operation.test.body) + countOperations(operation.body);
+        total +=
+          analyzeRegion(operation.test.body, constants) + analyzeRegion(operation.body, constants);
+        break;
+      case 'loop':
+        total += analyzeRegion(operation.body, constants);
         break;
       case 'assert':
-        if (operation.message) total += countOperations(operation.message.body);
+        if (operation.message) total += analyzeRegion(operation.message.body, constants);
         break;
       default:
         break;
@@ -2808,8 +2801,8 @@ class Instruction {
       );
     }
     this.nextPcValue = instruction.nextPc;
-    this.constants = constantsOf(instruction.body);
     const shape = shapeOf(instruction.body);
+    this.constants = shape.constants;
     this.operations = shape.operations;
     this.nestedOperations = shape.nestedOperations;
     this.pc = this.literal(instruction.pc);
