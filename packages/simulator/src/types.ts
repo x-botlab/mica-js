@@ -152,6 +152,8 @@ export interface JitTranslateInput extends JitDirectTimingInput {
   readonly codeBase: number;
   /** 按实例 memory 维护的代码代际；代码区域内的成功写入即时递增。 */
   readonly codeVersion: number;
+  /** During translate, load the named groups in order and use the returned builder for the block. */
+  readonly withFunctions?: (...groups: string[]) => JitBlockBuilder;
   /**
    * 报告本次返回块中一个指令入口的连续取指字节范围，供 Direct JIT 判断不同逻辑
    * 窗口是否指向同一经验证的指令体。仅在同步 translate 回调期间有效；多次调用
@@ -276,6 +278,8 @@ export interface JitOptions {
   readonly functions?: (
     device: DeviceIR,
   ) => readonly Extract<DeclarationIR, { kind: 'function' }>[];
+  /** JIT-local helper groups loaded on the first translate callback that requests them. */
+  readonly functionGroups?: Readonly<Record<string, NonNullable<JitOptions['functions']>>>;
   readonly beforeInstruction?: InstructionHook;
   readonly polling?: readonly JitPolling[];
   readonly delays?: ReadonlyMap<number, JitDelay>;

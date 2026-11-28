@@ -68,6 +68,8 @@ GPIO 写入后遇到正时长，直接程序先在前缀的原时刻提交状态
 
 `waitUntil` 保持按依赖唤醒的 WFI 等待。单 JIT 板上的无副作用自循环可自动证明并跳过重复执行，依赖变化后沿原循环相位恢复，不提前读到外部变化；多 JIT 保留原交错顺序。模型也可在 `attachJit` 声明 `polling: [{ pc, predicate, consume?, wait? }]`：吞吐模式在该 PC 开始前检查本实例无参 bool 纯函数，返回 false 时停在循环头等待实际依赖或设备时间事件，循环体不执行；返回 true 时先执行可选的 `consume`，再正常执行指令。`wait.delay` 给出到下一设备事件的 ps，`wait.advance` 在事件到期后推进设备状态并可把 PC 转入服务块。该声明是模型的等待语义承诺，精确模式校验它并实际执行循环。参见[吞吐合同](../../docs/spec/jit/throughput.rst)。
 
+`attachJit` 的 `functionGroups` 按名称注册辅助函数生成器。在 `translate` 中用 `input.withFunctions('bus', 'peripherals')` 依次加载所需的组，并用返回的 builder 生成整个指令块。每组在当前 JIT 注册内生成和绑定一次。后加载的组可引用已加载组的函数；启动时就需要的辅助函数（例如 `directTiming.blocked`）由 `functions` 声明。
+
 旧 `Circuit`、`compileCircuit`、原理图宿主和 `/sandbox` 入口已移除；编辑器与 playground 的接入需迁移到新的库/板合同。
 
 ## 核心运行时内部结构

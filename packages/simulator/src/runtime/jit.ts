@@ -2601,6 +2601,7 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     const batchMarks: CapturedBatchMark[] | undefined =
       board.batchExecution && board.execution === 'throughput' ? [] : undefined;
     const dependencyMarks = jit.options.translationIdentity !== undefined;
+    const loadFunctionGroups = jit.loadFunctionGroups;
     marking =
       shareMarks !== undefined ||
       spanMarks !== undefined ||
@@ -2613,6 +2614,15 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
         code: code as import('../types').BorrowedBytes,
         codeBase: codeRegion?.base ?? 0,
         codeVersion: jit.instance.codeVersion(codeMemory),
+        ...(loadFunctionGroups === undefined
+          ? {}
+          : {
+              withFunctions: (...groups: string[]) => {
+                if (!valid) throw new TypeError('Translation function loader expired');
+                loadFunctionGroups(groups);
+                return createJitBlockBuilder({ device: jit.model });
+              },
+            }),
         ...(shareMarks === undefined
           ? {}
           : {
@@ -2689,6 +2699,7 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
       }),
       createJitBlockBuilder({ device: jit.model }),
     );
+    valid = false;
     acceptSync(result);
     marking = false;
     const block = validateBoundBlockIR(result, jit.model);

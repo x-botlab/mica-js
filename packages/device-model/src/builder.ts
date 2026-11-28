@@ -31,6 +31,7 @@ import type { Node } from './schema.js';
 import { sameIR } from './structure.js';
 import {
   canonicalDeviceIR,
+  captureJitFunctionTable,
   indexedDeclarations,
   sameType,
   validateBlockIR,
@@ -1689,7 +1690,7 @@ export function buildJitFunctions(
     root.resolve();
     return canonicalJitFunctions(
       device,
-      snapshot(
+      captureJitFunctionTable(
         root.declarations.slice(device.declarations.length) as Extract<
           DeclarationIR,
           { kind: 'function' }

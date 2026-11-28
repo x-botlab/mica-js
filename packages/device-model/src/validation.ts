@@ -1678,11 +1678,27 @@ export function validateJitFunctions(
   return validateDeviceIR({ ...base, declarations: base.declarations.concat(functions) });
 }
 
+const capturedJitFunctionTables = new WeakSet<readonly FunctionDeclaration[]>();
+
+/** Reuse the immutable snapshot when the local Builder hands its table to binding. */
+export function captureJitFunctionTable(
+  functions: readonly FunctionDeclaration[],
+): readonly FunctionDeclaration[] {
+  if (capturedJitFunctionTables.has(functions)) return functions;
+  const captured = snapshot(functions);
+  capturedJitFunctionTables.add(captured);
+  return captured;
+}
+
 function validateJitFunctionExtension(
   base: DeviceIR,
   functions: readonly FunctionDeclaration[],
 ): DeviceIR | undefined {
-  const extension = snapshot({ kind: 'device', name: base.name, declarations: functions });
+  const extension = {
+    kind: 'device',
+    name: base.name,
+    declarations: captureJitFunctionTable(functions),
+  };
   deviceSchema(extension);
   const added = extension.declarations;
   if (!added.every((entry) => entry.kind === 'function')) return undefined;
