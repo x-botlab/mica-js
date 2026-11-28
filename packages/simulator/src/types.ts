@@ -308,8 +308,19 @@ export interface JitOptions {
   readonly directTier?: { readonly promoteAfter: number };
   readonly translate: JitTranslate;
 }
+export const prepareJitAot = Symbol.for('mica-js.simulator/prepare-jit-aot');
+
+export interface JitRegistration extends Disposable {
+  /**
+   * During factory initialization, after code has been loaded, request Direct compilation
+   * for up to 256 nonnegative safe-integer PCs. The host may decline this hint. The
+   * preparation phase does not execute instructions or advance virtual time.
+   */
+  readonly [prepareJitAot]?: (pcs: readonly number[]) => void;
+}
+
 export interface JitHost {
-  attachJit(options: JitOptions): Disposable;
+  attachJit(options: JitOptions): JitRegistration;
   loadBytes(memory: string, bytes: Uint8Array, offset?: number): void;
 }
 

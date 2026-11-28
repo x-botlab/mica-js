@@ -1,3 +1,4 @@
+export { prepareJitAot } from '@mica-js/simulator/device';
 export type {
   BorrowedBytes,
   ReadonlyBytes,
@@ -16,6 +17,7 @@ export type {
   TopicMessage,
   JitHost,
   JitOptions,
+  JitRegistration,
   JitTranslate,
   JitTranslateInput,
   JitCodeRegion,

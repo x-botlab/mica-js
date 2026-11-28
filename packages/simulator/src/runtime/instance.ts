@@ -17,6 +17,7 @@ import {
   clearPromotions,
   disposeDirect,
   invalidateDirect,
+  requestJitAot,
   resolveDirectArtifactCache,
 } from './jit';
 import type {
@@ -58,11 +59,13 @@ import type {
   JitDelay,
   JitOptions,
   JitPollingCheckpoint,
+  JitRegistration,
   RuntimeDiagnosticCode,
   RuntimePhase,
   SimulationError,
   TopicBridge,
 } from '../types';
+import { prepareJitAot } from '../types';
 
 /** Board capabilities used by an instance; the board owns scheduling and publication. */
 export interface InstanceBoard {
@@ -1628,7 +1631,7 @@ export class Instance {
       delays: this.captureMetadataDelays(value.delays, region),
     };
   }
-  attach(options: JitOptions): Disposable {
+  attach(options: JitOptions): JitRegistration {
     this.assertCallAllowed();
     if (this.board.phase !== 'initialize' || this.board.current !== this)
       throw this.board.error('INVALID_CALL_STATE', 'attachJit is initialization-only', this);
@@ -1823,6 +1826,13 @@ export class Instance {
         jit.pollReads = undefined;
       },
     };
+    Object.defineProperty(disposable, prepareJitAot, {
+      value: (pcs: readonly number[]): void => {
+        if (!jit.active || this.board.phase !== 'initialize' || this.board.current !== this)
+          throw this.board.error('INVALID_CALL_STATE', 'JIT AOT is initialization-only', this);
+        requestJitAot(jit, pcs);
+      },
+    });
     this.resources.push(disposable);
     return disposable;
   }

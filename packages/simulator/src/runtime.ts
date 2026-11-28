@@ -22,6 +22,7 @@ import {
 } from './runtime/batch';
 import {
   cancelPollingReservation,
+  prepareJitStartup,
   readDirectCheckpointStats,
   runJit,
   syncJitCall,
@@ -401,6 +402,8 @@ class BoardRuntime implements Board {
         instance.adapter = adapter as unknown as DeviceAdapter;
         if (this.isFaulted) throw this.primary!;
       }
+      if (this.execution === 'throughput' && this.jits.length === 1)
+        prepareJitStartup(this, this.jits[0]!);
       this.current = undefined;
       this.phase = 'idle';
       Object.defineProperty(this, OBSERVATION_PROBE, {
