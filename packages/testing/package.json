@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/testing",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "Runner-independent testbenches for Mica device simulation",
   "license": "MIT",
   "repository": {
