@@ -28,6 +28,15 @@ export function assertSelfContained(code: string, label: string): void {
   visit(parseAst(code));
 }
 
+/**
+ * Output minifier for packaged modules.
+ *
+ * Vite keeps `codegen: false` for library builds, which mangles identifiers but preserves the
+ * original whitespace and line breaks. Shipped device modules need the compact form, so the
+ * codegen stage runs as well.
+ */
+export const MINIFY_OUTPUT = { compress: true, mangle: true, codegen: true } as const;
+
 export interface ContentBuildOptions {
   readonly root: string;
   readonly sourceDir?: string;
@@ -166,7 +175,10 @@ export async function buildContent(options: ContentBuildOptions): Promise<readon
           lib: { entry: entryId, formats: ['es'], fileName: () => `${kind}.js`, cssFileName: kind },
           rolldownOptions: {
             input: entryId,
-            output: { codeSplitting: false },
+            output: {
+              codeSplitting: false,
+              ...((options.minify ?? false) ? { minify: MINIFY_OUTPUT } : {}),
+            },
             onwarn(warning, warn) {
               if (warning.code === 'UNRESOLVED_IMPORT') throw new Error(warning.message);
               warn(warning);

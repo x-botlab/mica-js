@@ -380,9 +380,9 @@ describe('unified device CLI', () => {
     expect(await readFile(join(outDir, 'package.json'), 'utf8')).toBe(
       `${JSON.stringify(MANIFEST, null, 2)}\n`,
     );
-    expect(await readFile(join(outDir, 'views', 'panel.js'), 'utf8')).toMatch(
-      /document\.title\s*=\s*"button"/,
-    );
+    const panel = await readFile(join(outDir, 'views', 'panel.js'), 'utf8');
+    expect(panel).toMatch(/document\.title\s*=\s*[`"']button[`"']/);
+    expect(panel).not.toContain('\n');
     expect(await readdir(join(outDir, 'views', '2d'))).toEqual(['geometry.json', 'index.js']);
   });
 
