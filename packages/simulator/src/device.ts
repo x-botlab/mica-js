@@ -1,3 +1,4 @@
+export { prepareJitAot } from './types';
 export type {
   DeviceContext,
   DeviceBatch,
@@ -29,6 +30,7 @@ export type {
   JitCodeMetadataProvider,
   InstructionHook,
   JitOptions,
+  JitRegistration,
   JitPolling,
   JitPollingCheckpoint,
   JitHost,

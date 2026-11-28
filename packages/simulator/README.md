@@ -70,6 +70,22 @@ GPIO 写入后遇到正时长，直接程序先在前缀的原时刻提交状态
 
 旧 `Circuit`、`compileCircuit`、原理图宿主和 `/sandbox` 入口已移除；编辑器与 playground 的接入需迁移到新的库/板合同。
 
+### Direct JIT 启动预编译
+
+器件可以在工厂中加载代码后，通过 `attachJit` 返回的登记句柄提供启动 PC。
+`prepareJitAot` 可从 `@mica-js/sdk/device` 或 `@mica-js/simulator/device` 导入。
+
+```ts
+const registration = context.attachJit(cpuJit);
+context.loadBytes('code', firmware);
+registration[prepareJitAot]?.(startupPcs);
+```
+
+请求最多包含 256 个非负安全整数 PC。单 JIT 的吞吐模式会在工厂初始化完成后、首次
+推进前，通过正常的翻译校验和 Direct 准入生成执行函数。此阶段仿真时间仍为 0。
+其他入口继续按需编译，精确模式和多个 JIT 的板跳过准备。如果主代码在请求后发生写入，
+该次请求失效。会话之间可复用有界缓存中的只读编译工件，各实例独立维护运行状态。
+
 ## 核心运行时内部结构
 
 - `src/runtime.ts`：库与板装配、生命周期、话题、全板电气发布、观察轮与捕获屏障、普通过程续体和阶段调度。

@@ -70,6 +70,23 @@ const directArtifactSnapshots = new WeakMap<Jit, DirectJitArtifactCacheStats>();
 /** False when a declared quiet guard cannot be resolved; marked routes must not enroll. */
 const directTimingEligible = new WeakMap<Jit, boolean>();
 
+const aotRequests = new WeakMap<
+  Jit,
+  { readonly pcs: ReadonlySet<number>; readonly codeVersion: number }
+>();
+
+export function requestJitAot(jit: Jit, pcs: readonly number[]): void {
+  if (!Array.isArray(pcs) || pcs.length > 256)
+    throw new TypeError('Expected at most 256 AOT entry PCs');
+  const entries = Array.from(pcs);
+  for (const pc of entries)
+    if (!Number.isSafeInteger(pc) || pc < 0) throw new TypeError('Invalid AOT entry PC');
+  aotRequests.set(jit, {
+    pcs: new Set(entries),
+    codeVersion: jit.instance.codeVersion(jit.options.code),
+  });
+}
+
 /** Resolve one registration's artifact cache; omission keeps the original private default. */
 export function resolveDirectArtifactCache(
   shareDirectArtifacts: boolean | undefined,
@@ -2747,6 +2764,55 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     valid = false;
     marking = false;
     board.phase = prior;
+  }
+}
+
+/** Assemble requested routes through normal validation before any guest execution. */
+export function prepareJitStartup(board: JitRuntimeHost, jit: Jit): void {
+  const request = aotRequests.get(jit);
+  if (request === undefined) return;
+  aotRequests.delete(jit);
+  if (!jit.active || jit.instance.codeVersion(jit.options.code) !== request.codeVersion) return;
+
+  board.current = jit.instance;
+  jit.artifactCache = resolveDirectArtifactCache(true);
+  for (const pc of request.pcs) {
+    const region = codeRegionFor(jit, pc);
+    if (region !== undefined && region.memory !== jit.options.code) continue;
+    try {
+      ensureMetadataForPc(board, jit, pc);
+      if (!jit.cache.has(pc)) translateBlock(board, jit, pc);
+    } catch {
+      // The normal path retries a failed speculative translation if execution reaches its PC.
+      continue;
+    }
+
+    const instruction = jit.cache.get(pc);
+    if (
+      instruction !== undefined &&
+      jit.options.directTier !== undefined &&
+      directAdmitted(jit, instruction)
+    ) {
+      jit.promotions.set(pc, {
+        count: 0,
+        state: 'promoted',
+        body: instruction.body,
+        nextPc: instruction.nextPc,
+        codeVersion: instruction.codeVersion,
+      });
+    }
+  }
+
+  if (jit.cache.size === 0) return;
+  try {
+    refreshDirectGuards(jit);
+    ensureDirectSession(board, jit);
+  } catch {
+    // A speculative compiler failure must not leave entries that can poison normal assembly.
+    jit.cache.clear();
+    jit.cacheMemories.clear();
+    clearPromotions(jit, false);
+    invalidateDirect(jit, true);
   }
 }
 

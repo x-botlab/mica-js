@@ -1,5 +1,5 @@
 export { createDeviceLibrary, createBoard } from './runtime';
-export { SimulationError } from './types';
+export { prepareJitAot, SimulationError } from './types';
 export type * from './types';
 
 export { createSimulationRuntime } from './simulation-runtime/runtime';
