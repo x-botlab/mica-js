@@ -1,5 +1,17 @@
 # @mica-js/sdk
 
+## 0.10.0
+
+### Minor Changes
+
+- 31e2b19: 新增可选的 Direct JIT 启动预编译入口。器件在加载固件后可提供启动 PC，宿主在仿真推进前校验并编译符合条件的入口。编译工件可在同一宿主的会话间复用，Flash 写入继续使当前会话的代码缓存失效。
+
+### Patch Changes
+
+- 8ef9f9b: 源码压缩后缺少空白移除：构建产出的器件、视图与组件模块只压缩了标识符，仍保留源码换行与缩进。现在打包时同时执行 codegen 阶段，产物为单行的紧凑模块。
+- Updated dependencies [31e2b19]
+  - @mica-js/simulator@2.14.0
+
 ## 0.9.0
 
 ### Minor Changes
