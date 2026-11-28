@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
  * 1. `generatedSource`：生成源码的函数划分（分片数、最大函数字符数，代理指标）与
  *    V8 打印的 `Bytecode length`（精确）；
  * 2. `optimizationEvents`：`--trace-opt` / `--trace-deopt` 的事件计数与涉及函数名（精确）；
- * 3. `optimizationStatus`：直接程序 `run` 对象上 `%GetOptimizationStatus` 的位图（精确）。
+ * 3. `optimizationStatus`：`run` 与每个 `stepShardN` 同名函数的最后一个实例上的位图（精确）。
  *
  * 两次子进程：`trace` 用请求的窗口测事件与优化状态，`bytecode` 用短窗口打开
  * `--print-bytecode` 取字节码（同一窗口下输出过大）。子进程只回写 JSON 摘要，
@@ -67,6 +67,7 @@ async function child([kind, workload, cyclesText, reportPath]) {
   const cycles = Number(cyclesText);
   const started = performance.now();
   const programs = [];
+  const latestStepShards = new Map();
   const nativeFunction = globalThis.Function;
   // 生成源码只有一条出口：`compileDirectJit` 里的 `new Function(...)`。拦下构造参数即得到
   // 每次下发的完整源码；再包一层工厂调用，就拿到运行时真正持有的 `run` 对象句柄。
@@ -80,9 +81,14 @@ async function child([kind, workload, cyclesText, reportPath]) {
       programs.push(program);
       return (...callArgs) => {
         const result = factory(...callArgs);
-        // A fixed session dispatcher returns its `run`; an incremental shard factory returns
-        // its `[step, resume]` pair and has no single function to optimize.
+        // The session dispatcher returns `run`; resident shard factories return `[step, resume]`.
         if (typeof result === 'function') program.run ??= result;
+        if (kind === 'trace' && Array.isArray(result)) {
+          const [step] = result;
+          if (typeof step === 'function' && /^stepShard\d+$/.test(step.name)) {
+            latestStepShards.set(step.name, step);
+          }
+        }
         return result;
       };
     },
@@ -117,7 +123,14 @@ async function child([kind, workload, cyclesText, reportPath]) {
       }
       program.run = undefined;
     });
-    writeFileSync(reportPath, JSON.stringify({ kind, workload, cycles, wallMs, direct, programs }));
+    const stepShardStatuses = [...latestStepShards].map(([name, step]) => ({
+      name,
+      status: optimizationStatus(step),
+    }));
+    writeFileSync(
+      reportPath,
+      JSON.stringify({ kind, workload, cycles, wallMs, direct, programs, stepShardStatuses }),
+    );
   } finally {
     bench.dispose();
   }
@@ -480,10 +493,12 @@ export function summarize(input) {
     .map((program) => ({
       index: program.index,
       key: program.key ?? null,
-      status: program.status ?? 0,
-      bits: decodeStatus(program.status ?? 0),
-      turboFanned: ((program.status ?? 0) & TURBOFAN_BIT) !== 0,
+      ...summarizeStatus(program.status ?? 0),
     }));
+  const stepShards = (input.trace.report.stepShardStatuses ?? []).map(({ name, status }) => ({
+    name,
+    ...summarizeStatus(status),
+  }));
   const turboFanned = statuses.filter((entry) => entry.turboFanned);
 
   return {
@@ -561,6 +576,7 @@ export function summarize(input) {
     optimizationStatus: {
       turboFanBit: TURBOFAN_BIT,
       functions: statuses,
+      latestStepShards: stepShards,
       turboFanned: turboFanned.length,
       optimized: statuses.filter((entry) => entry.bits.includes('optimized')).length,
       interpreted: statuses.filter((entry) => entry.bits.includes('interpreted')).length,
@@ -606,6 +622,10 @@ const STATUS_BITS = Object.freeze([
 
 function decodeStatus(status) {
   return STATUS_BITS.filter(([bit]) => (status & bit) !== 0).map(([, name]) => name);
+}
+
+function summarizeStatus(status) {
+  return { status, bits: decodeStatus(status), turboFanned: (status & TURBOFAN_BIT) !== 0 };
 }
 
 function printSummary(report) {
