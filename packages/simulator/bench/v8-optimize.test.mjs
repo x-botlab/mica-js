@@ -22,8 +22,8 @@ import {
 const CLI = fileURLToPath(new URL('./v8-optimize.mjs', import.meta.url));
 const BENCH = join(CLI, '..');
 
-/** `stress` 需要约 100 万 cycles 才会把分片推进到 TurboFan（更短的窗口只有 Maglev）。 */
-const CYCLES = 1_000_000;
+/** 两百万 cycles 给 `stress` 的常驻 step 分片留出预热和重新优化的时间。 */
+const CYCLES = 2_000_000;
 
 function run(args) {
   const result = spawnSync(process.execPath, [CLI, ...args], {
@@ -38,7 +38,7 @@ function run(args) {
 describe('v8-optimize 基准', () => {
   let measured;
 
-  // 一次测量覆盖三条断言：`stress` 单次约 6–8 s，重复跑只会拉长测试而不增加信息。
+  // 用同一次 `stress` 测量检查源码体积、优化事件和函数状态。
   before(() => {
     measured = run(['--workload', 'stress', '--cycles', String(CYCLES)]);
   });
@@ -52,7 +52,9 @@ describe('v8-optimize 基准', () => {
     assert.ok(report.generatedSource.largestProgramCharacters > 0);
     assert.ok(report.generatedSource.largestFunction.characters > 0);
     assert.ok(report.optimizationEvents.count.completedTurboFan > 0);
-    assert.ok(report.optimizationStatus.functions.length > 0);
+    assert.ok(
+      report.optimizationStatus.functions.some((entry) => entry.bits.includes('is-function')),
+    );
     assert.match(summary, /源码\[代理\]/);
     assert.match(summary, /字节码\[精确\]/);
   });
@@ -84,14 +86,21 @@ describe('v8-optimize 基准', () => {
     );
   });
 
-  it('生成函数真的进了 TurboFan，且 run 的位图带 TurboFan 位', () => {
+  it('常驻 step 分片在预热结束时均处于 TurboFan', () => {
     const report = measured.report;
+    const { latestStepShards } = report.optimizationStatus;
 
-    assert.equal(report.verdict.turboFanObserved, true);
-    assert.ok(report.optimizationEvents.shardFunctions.turboFan.length > 0);
-    const turboFanned = report.optimizationStatus.functions.filter((entry) => entry.turboFanned);
-    assert.ok(turboFanned.length > 0, '%GetOptimizationStatus 里应至少有一个 run 带 TurboFan 位');
-    for (const entry of turboFanned) assert.ok(entry.bits.includes('turbo-fanned'));
+    // 测试负载只有一个 Direct 会话，且不移除路由。同名分片的最新函数覆盖全部常驻 step。
+    assert.equal(report.direct?.length, 1);
+    const [direct] = report.direct;
+    assert.equal(direct.directSessions, 1);
+    assert.equal(direct.directRouteRemovals, 0);
+    assert.ok(direct.directShards > 0);
+    assert.equal(latestStepShards.length, direct.directShards);
+    assert.deepEqual(
+      latestStepShards.filter((shard) => !shard.turboFanned),
+      [],
+    );
   });
 
   it('交叉包负载被显式拒绝，而不是给出无法比较的读数', () => {
