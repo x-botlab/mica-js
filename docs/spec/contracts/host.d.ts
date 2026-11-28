@@ -76,6 +76,12 @@ export interface ProcessBatchRegistration {
 export interface JitBatchMark {
   readonly pc: number;
   readonly stopBefore?: string;
+  readonly fill16?: {
+    readonly memory: string;
+    readonly stepPs: number;
+    readonly summarize: string;
+    readonly transientWrites?: readonly string[];
+  };
 }
 /**
  * Direct 时间准入声明；`service` 引用已声明的 number 状态，`blocked` 引用已声明、

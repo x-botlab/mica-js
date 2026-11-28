@@ -1,5 +1,5 @@
 import type { Disposable } from '@mica-js/core/lifecycle';
-import { type DeclarationIR, type DeviceIR, validateDeviceIR } from '@mica-js/device-model';
+import { type DeclarationIR, type DeviceIR, validateJitFunctions } from '@mica-js/device-model';
 import type { ExecutionHost, ResourceHandle } from '@mica-js/compiler';
 import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
@@ -110,7 +110,7 @@ function bindJitFunctions(base: DeviceIR, functions: JitFunctions): DeviceIR {
   let models = jitModels.get(base);
   const cached = models?.get(functions);
   if (cached !== undefined) return cached;
-  const model = validateDeviceIR({ ...base, declarations: base.declarations.concat(functions) });
+  const model = validateJitFunctions(base, functions);
   for (const declaration of model.declarations.slice(base.declarations.length))
     if (declaration.kind !== 'function') throw new TypeError('Expected JIT function declaration');
   if (models === undefined) {

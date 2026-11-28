@@ -21,7 +21,14 @@ import {
 } from '@mica-js/device-model';
 import { isPollingInstruction } from '../polling';
 import type { EventQueue } from '../queue';
-import { bindBatch, type BatchKind, type BoundBatch, type PreparedBatch } from './batch';
+import {
+  bindBatch,
+  bindFill16,
+  captureFill16,
+  type BatchKind,
+  type BoundBatch,
+  type PreparedBatch,
+} from './batch';
 import { acceptSync } from './errors';
 import { body, MAX_TIME, time } from './execution';
 import type { Instance, InstanceBoard } from './instance';
@@ -37,6 +44,7 @@ import type {
   ResourceSlot,
 } from './state';
 import type {
+  JitBatchMark,
   JitCodeChange,
   JitCodeMetadataInput,
   JitCodeRegion,
@@ -606,7 +614,7 @@ function directTimingAdmitted(jit: Jit, instruction: JitInstruction): boolean {
 
 /** One cache entry may join the direct session: primary code and no effective polling. */
 function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
-  return instruction.batch === undefined && directTimingAdmitted(jit, instruction);
+  return directTimingAdmitted(jit, instruction);
 }
 
 /**
@@ -733,6 +741,7 @@ function directInstruction(jit: Jit, instruction: JitInstruction): DirectJitInst
     pc: instruction.pc,
     nextPc: instruction.nextPc,
     body: instruction.body,
+    ...(instruction.batch === undefined ? {} : { requiresBatchFallback: true }),
     // Sharing is opt-in per registration; a candidate collected in an earlier translation
     // of the same option state is only forwarded by a sharing session.
     ...(jit.options.shareDirectBodies === true && instruction.share !== undefined
@@ -815,7 +824,7 @@ function applyDirectShareMarks(
       rejected.outsideRegion++;
       continue;
     }
-    if (!directAdmitted(jit, instruction)) {
+    if (instruction.batch !== undefined || !directAdmitted(jit, instruction)) {
       rejected.notAdmitted++;
       continue;
     }
@@ -999,6 +1008,7 @@ interface CapturedBatchMark {
   readonly pc: number | undefined;
   readonly stopBefore: unknown;
   readonly hasStopBefore: boolean;
+  readonly fill16?: JitBatchMark['fill16'];
   /** The complete mark has the exact plain-data shape and a finite PC. */
   readonly valid: boolean;
 }
@@ -1020,14 +1030,15 @@ function captureBatchMark(value: unknown): CapturedBatchMark {
       )
         pc = descriptor.value;
     }
-    dataObject(value, ['pc', 'stopBefore']);
+    dataObject(value, ['pc', 'stopBefore', 'fill16']);
     if (pc === undefined)
       return { pc: undefined, stopBefore: undefined, hasStopBefore: false, valid: false };
     hasStopBefore = Object.hasOwn(value, 'stopBefore');
     stopBefore = hasStopBefore
       ? (value as { readonly stopBefore?: unknown }).stopBefore
       : undefined;
-    return { pc, stopBefore, hasStopBefore, valid: true };
+    const fill16 = Object.hasOwn(value, 'fill16') ? captureFill16(value.fill16) : undefined;
+    return { pc, stopBefore, hasStopBefore, fill16, valid: true };
   } catch {
     return { pc, stopBefore, hasStopBefore, valid: false };
   }
@@ -1088,24 +1099,18 @@ function applyBatchMarks(
       board.declineBatch('jit', 'route');
       continue;
     }
-    let plan: ReturnType<typeof proveJitBatch>;
-    try {
-      plan = proveJitBatch(canonical[index]!);
-    } catch {
-      plan = undefined;
-    }
-    if (plan === undefined) {
+    const plan = mark.fill16 === undefined ? proveJitBatch(canonical[index]!) : undefined;
+    if (plan === undefined && mark.fill16 === undefined) {
       board.declineBatch('jit', 'proof');
       continue;
     }
     let bound: BoundBatch | undefined;
     try {
-      bound = bindBatch(
-        jit.instance,
-        plan,
-        mark.hasStopBefore ? (mark.stopBefore as string) : undefined,
-        jit.options.pc,
-      );
+      const stopBefore = mark.hasStopBefore ? (mark.stopBefore as string) : undefined;
+      bound =
+        mark.fill16 === undefined
+          ? bindBatch(jit.instance, plan!, stopBefore, jit.options.pc)
+          : bindFill16(jit.instance, mark.fill16, stopBefore, jit.options.pc);
     } catch {
       bound = undefined;
     }
@@ -1160,28 +1165,6 @@ function resolveBatchDirectConflicts(jit: Jit, instructions: JitInstruction[]): 
       instructions[index] = withoutBatch;
     }
   }
-}
-
-/**
- * Retract Direct routes that a newly accepted batch head must never bypass. An idle
- * session drops only the affected entries; a suspended suffix is retired as a whole so it
- * can finish its current generated function once before the next scheduler turn.
- */
-function retractBatchDirectRoutes(jit: Jit, instructions: readonly JitInstruction[]): void {
-  if (!instructions.some((instruction) => instruction.batch !== undefined)) return;
-  const direct = jit.direct;
-  if (direct === undefined || jit.directStale) return;
-  if (direct.frame.resume !== 0) {
-    staleDirectSession(jit, true);
-    return;
-  }
-  const pcs: number[] = [];
-  for (const instruction of instructions)
-    if (instruction.batch !== undefined && direct.session.has(instruction.pc))
-      pcs.push(instruction.pc);
-  if (pcs.length === 0) return;
-  direct.session.remove(pcs);
-  syncDirectSessionStats(jit, direct.session);
 }
 
 /**
@@ -1990,6 +1973,7 @@ function createDirectFrame(
     resume: 0,
     // First resumption must not add a property to a frame already seen by hot shards.
     stopAfterInstruction: false,
+    batchFallbackPc: undefined,
     boundarySettled: false,
     directMetrics: { spanRuns: 0, loopRounds: 0 },
   };
@@ -2082,7 +2066,12 @@ type DirectOutcome = 'ran' | 'fallback' | 'assembly' | 'assembly-progressed' | '
  * Run the fixed dispatcher. `untranslated`/`pending` return to `runJit` as an assembly
  * request; `fallback` means the compiler rejected a PC and the interpreter must take it.
  */
-function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): DirectOutcome {
+function runDirect(
+  board: JitRuntimeHost,
+  jit: Jit,
+  hookReads?: Dependencies,
+  batchFallbackPc?: number,
+): DirectOutcome {
   const instance = jit.instance;
   let pending = Boolean(jit.direct?.frame.resume);
   if (!pending) {
@@ -2101,7 +2090,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
       current?.polling ||
       // A marked batch head must be dispatched by `runJit` so the batch admission runs
       // before the implicit next-PC write, even when a compiled route would still exist.
-      current?.batch !== undefined
+      (current?.batch !== undefined && pc !== batchFallbackPc)
     )
       return 'declined';
     refreshDirectGuards(jit, hookReads);
@@ -2118,6 +2107,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
   }
   const direct = jit.direct!;
   const frame = direct.frame as RuntimeDirectFrame;
+  frame.batchFallbackPc = batchFallbackPc;
   const layout = jit.directLayout!;
   for (;;) {
     if (pending) frame.stopAfterInstruction = true;
@@ -2135,6 +2125,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
       // Resource barriers exclude intermediate observers; real events retain exact deadlines.
       reason = direct.session.run(frame, Math.min(board.executionEnd, board.events.time));
     } finally {
+      frame.batchFallbackPc = undefined;
       try {
         wrote = flushDirect(board, instance, layout, frame);
       } finally {
@@ -2748,10 +2739,6 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     )
       jit.revision++;
     jit.directSkip = undefined;
-    // Replacing a block can turn a previously Direct-admitted PC into a batch head. Remove
-    // those routes before the new translation can be dispatched. Disabled boards cannot
-    // have accepted marks, so they skip the scan entirely.
-    if (batchMarks !== undefined) retractBatchDirectRoutes(jit, instructions);
     commitDirectTranslation(jit, instructions, replaced);
     return instructions;
   } catch (cause) {
@@ -2887,10 +2874,19 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       const instructions = translateBlock(board, jit, pc);
       instruction = instructions[0]!;
     }
-    // Both a cache hit and a fresh translation reach the same admission. Unmarked entries
-    // never enter the helper, and a decline keeps the ordinary writer below untouched.
-    if (instruction.batch !== undefined && tryJitBatch(board, jit, pc, instruction, hookPending))
-      return;
+    // Attempt a batch before any guest write. A decline grants its Direct body one entry.
+    if (instruction.batch !== undefined) {
+      if (tryJitBatch(board, jit, pc, instruction, hookPending)) return;
+      if (!hookPending && board.execution === 'throughput' && board.jits.length === 1) {
+        const outcome = runDirect(board, jit, hookReads, pc);
+
+        if (outcome === 'ran') return;
+        if (outcome === 'assembly-progressed') {
+          board.queueJit(jit);
+          return;
+        }
+      }
+    }
     jit.currentPc = pc;
     if (board.execution === 'throughput' && board.jits.length === 1)
       directStats(jit).directGenericInstructions++;

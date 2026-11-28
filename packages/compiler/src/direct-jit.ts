@@ -397,6 +397,7 @@ type ResolveFunction = (name: string) => {
 };
 
 interface CachedInstruction {
+  readonly requiresBatchFallback?: boolean | undefined;
   readonly body: RegionIR;
   readonly nextPc: number;
   readonly delay: DelayFingerprint | undefined;
@@ -2798,8 +2799,14 @@ class Instruction {
     return new Function('C', 'H', source)(Object.freeze([...constants]), helpers);
   }
 
-  compile(instruction: { pc: number; nextPc: number; body: RegionIR }): this {
+  compile(instruction: DirectJitInstruction): this {
     this.pcValue = instruction.pc;
+    if (instruction.requiresBatchFallback === true) {
+      this.guard.push(
+        `if (F.batchFallbackPc !== ${instruction.pc}) return "invalidated";`,
+        'F.batchFallbackPc = undefined;',
+      );
+    }
     this.nextPcValue = instruction.nextPc;
     this.constants = constantsOf(instruction.body);
     const shape = shapeOf(instruction.body);
@@ -5347,6 +5354,7 @@ class DirectJitSessionImpl implements DirectJitSession {
         cached !== undefined &&
         cached.body === instruction.body &&
         cached.nextPc === instruction.nextPc &&
+        cached.requiresBatchFallback === instruction.requiresBatchFallback &&
         sameDelay(cached.delay, delay)
       ) {
         const compiled = cached.instruction;
@@ -5942,7 +5950,12 @@ class DirectJitSessionImpl implements DirectJitSession {
       const delay = delayFingerprint(delays?.get(pc));
       if (sameDelay(cached.delay, delay)) continue;
       const record = this.compileRecord(
-        { pc, nextPc: cached.nextPc, body: cached.body },
+        {
+          pc,
+          nextPc: cached.nextPc,
+          body: cached.body,
+          requiresBatchFallback: cached.requiresBatchFallback,
+        },
         delay,
         { share: cached.share, invalid: cached.shareInvalid },
         { span: cached.span, invalid: cached.spanInvalid },
@@ -5975,6 +5988,7 @@ class DirectJitSessionImpl implements DirectJitSession {
     return {
       body: instruction.body,
       nextPc: instruction.nextPc,
+      requiresBatchFallback: instruction.requiresBatchFallback,
       delay,
       instruction: compiled.instruction,
       artifactHit: compiled.artifactHit,
@@ -5994,12 +6008,16 @@ class DirectJitSessionImpl implements DirectJitSession {
   ): { instruction: Instruction | undefined; artifactHit: boolean } {
     // Enabling the artifact cache is an explicit compiler-side opt-in. A local cache hit is
     // handled before this point, so every lookup here is a genuine cross-session attempt.
-    const reused = reuseArtifactInstruction(this.state, this.artifactBinding, instruction, delay);
+    const gated = instruction.requiresBatchFallback === true;
+    const reused = gated
+      ? undefined
+      : reuseArtifactInstruction(this.state, this.artifactBinding, instruction, delay);
     if (reused !== undefined) {
       this.counters.artifactInstructionHits++;
       return { instruction: reused, artifactHit: true };
     }
-    if (artifactUsable(this.state) !== undefined) this.counters.artifactInstructionMisses++;
+    if (!gated && artifactUsable(this.state) !== undefined)
+      this.counters.artifactInstructionMisses++;
     const capture = artifactCapture(this.state);
     const resistorSlot = (pin: string, resistance: number): number => {
       const key = `${pin}\0${resistance}`;
@@ -6019,8 +6037,15 @@ class DirectJitSessionImpl implements DirectJitSession {
         resolveFunction,
       ).compile(instruction);
       compiled.artifactKey =
-        insertArtifactInstruction(this.state, this.artifactBinding, instruction, delay, compiled) ??
-        privateArtifactKey(compiled);
+        (gated
+          ? undefined
+          : insertArtifactInstruction(
+              this.state,
+              this.artifactBinding,
+              instruction,
+              delay,
+              compiled,
+            )) ?? privateArtifactKey(compiled);
       return { instruction: compiled, artifactHit: false };
     } catch (error) {
       if (error !== unsupported) throw error;
